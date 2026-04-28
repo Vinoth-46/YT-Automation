@@ -148,86 +148,93 @@ class ProductionBot:
     # --- Blocking Pipeline Runners (run in threads) ---
     def _run_daily_pipeline_blocking(self, force: bool, message_id: int = None):
         """Generates exactly 1 script and 1 video."""
+        import asyncio
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
         if config.RENDER_LOCK.locked():
-            import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             loop.run_until_complete(self._send_msg("⚠️ *A video is already being generated.* Please wait a moment..."))
             loop.close()
             return
 
-        with config.RENDER_LOCK:
-            try:
-                import asyncio
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Step 1: Generate 1 Script (TOTAL_DAYS is set to 1 in config.py)
-            scripts = generate_scripts(force_regenerate=True)
-            if not scripts:
-                loop.run_until_complete(self._send_msg("❌ Failed to generate script from LLM."))
-                return
+        try:
+            with config.RENDER_LOCK:
+                # Step 1: Generate 1 Script (TOTAL_DAYS is set to 1 in config.py)
+                scripts = generate_scripts(force_regenerate=True)
+                if not scripts:
+                    loop.run_until_complete(self._send_msg("❌ Failed to generate script from LLM."))
+                    return
+                    
+                if message_id:
+                    try:
+                        loop.run_until_complete(self.app.bot.edit_message_text(
+                            chat_id=self.chat_id,
+                            message_id=message_id,
+                            text="⏳ Step 2: Generating Visuals & Voiceover...",
+                            parse_mode="Markdown"
+                        ))
+                    except Exception:
+                        pass
+
+                # Step 2: Generate visual plan for that 1 script
+                visual_plans = generate_visual_plans(scripts, force_regenerate=True)
                 
-            if message_id:
-                try:
-                    loop.run_until_complete(self.app.bot.edit_message_text(
-                        chat_id=self.chat_id,
-                        message_id=message_id,
-                        text="⏳ Step 2: Generating Visuals & Voiceover...",
-                        parse_mode="Markdown"
-                    ))
-                except Exception:
-                    pass
+                if message_id:
+                    try:
+                        loop.run_until_complete(self.app.bot.edit_message_text(
+                            chat_id=self.chat_id,
+                            message_id=message_id,
+                            text="⏳ Step 3: Rendering Final Video (ETA: ~2 minutes) 🕒...",
+                            parse_mode="Markdown"
+                        ))
+                    except Exception:
+                        pass
 
-            # Step 2: Generate visual plan for that 1 script
-            visual_plans = generate_visual_plans(scripts, force_regenerate=True)
-            
-            if message_id:
-                try:
-                    loop.run_until_complete(self.app.bot.edit_message_text(
-                        chat_id=self.chat_id,
-                        message_id=message_id,
-                        text="⏳ Step 3: Rendering Final Video (ETA: ~2 minutes) 🕒...",
-                        parse_mode="Markdown"
-                    ))
-                except Exception:
-                    pass
-
-            # Use global config for VIDEO_MODE temporarily
-            original_mode = getattr(config, "VIDEO_MODE", "avatar")
-            config.VIDEO_MODE = self.state.get("video_mode", "avatar")
-            
-            # Step 3: Generate the video (Day 1)
-            video_path = generate_day(1, scripts, visual_plans, force=True)
-            
-            # Restore mode
-            config.VIDEO_MODE = original_mode
-
-            if video_path and video_path.exists():
-                # Send Video Preview
-                keyboard = [
-                    [InlineKeyboardButton("✅ Approve", callback_data="video_approve"),
-                     InlineKeyboardButton("❌ Reject", callback_data="video_reject")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
+                # Use global config for VIDEO_MODE temporarily
+                original_mode = getattr(config, "VIDEO_MODE", "avatar")
+                config.VIDEO_MODE = self.state.get("video_mode", "avatar")
                 
-                with open(video_path, 'rb') as video_file:
-                    loop.run_until_complete(self.app.bot.send_video(
-                        chat_id=self.chat_id,
-                        video=video_file,
-                        caption=f"🎥 *Today's Video Preview*\nReview the generated video:",
-                        parse_mode="Markdown",
-                        reply_markup=reply_markup,
-                        write_timeout=120,
-                        read_timeout=120,
-                        connect_timeout=120
-                    ))
-            else:
-                loop.run_until_complete(self._send_msg(f"❌ Video generation failed."))
-            loop.close()
+                # Step 3: Generate the video (Day 1)
+                video_path = generate_day(1, scripts, visual_plans, force=True)
+                
+                # Restore mode
+                config.VIDEO_MODE = original_mode
+
+                if video_path and video_path.exists():
+                    # Send Video Preview
+                    from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                    keyboard = [
+                        [InlineKeyboardButton("✅ Approve", callback_data="video_approve"),
+                         InlineKeyboardButton("❌ Reject", callback_data="video_reject")]
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
+                    
+                    with open(video_path, 'rb') as video_file:
+                        loop.run_until_complete(self.app.bot.send_video(
+                            chat_id=self.chat_id,
+                            video=video_file,
+                            caption=f"🎥 *Today's Video Preview*\nReview the generated video:",
+                            parse_mode="Markdown",
+                            reply_markup=reply_markup,
+                            write_timeout=120,
+                            read_timeout=120,
+                            connect_timeout=120
+                        ))
+                else:
+                    loop.run_until_complete(self._send_msg(f"❌ Video generation failed."))
+
         except Exception as e:
+            import traceback
             logger.error(traceback.format_exc())
-            loop.run_until_complete(self._send_msg(f"❌ Exception in pipeline: {e}"))
+            try:
+                loop.run_until_complete(self._send_msg(f"❌ Exception in pipeline: {str(e)[:200]}"))
+            except Exception:
+                pass
+        finally:
+            try:
+                loop.close()
+            except Exception:
+                pass
 
     def _generate_seo_blocking(self):
         try:
