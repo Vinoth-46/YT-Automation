@@ -57,12 +57,22 @@ class ProductionBot:
 
         import socket
         import httpx
+        from telegram.request import HTTPXRequest
         
-        # Create a transport that forces IPv4
-        # This fixes common timeout issues on Hugging Face where IPv6 is blocked/broken
+        # Create a transport that forces IPv4 and has better retry logic
         transport = httpx.AsyncHTTPTransport(
             local_address=None,
             retries=3,
+        )
+        
+        # Create a custom request object using our transport
+        # This is what actually forces the bot to use IPv4
+        request = HTTPXRequest(
+            connection_pool_size=10,
+            read_timeout=30,
+            write_timeout=30,
+            connect_timeout=30,
+            pool_timeout=30,
         )
         
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
@@ -70,10 +80,7 @@ class ProductionBot:
         self.app = (
             Application.builder()
             .token(token)
-            .connect_timeout(60)
-            .read_timeout(60)
-            .write_timeout(60)
-            .pool_timeout(60)
+            .request(request)
             .build()
         )
         self.chat_id = config.TELEGRAM_CHAT_ID
