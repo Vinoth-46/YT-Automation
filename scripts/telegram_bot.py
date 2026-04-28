@@ -50,7 +50,21 @@ def save_state(state):
 class ProductionBot:
     def __init__(self):
         self.state = load_state()
-        self.app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+        
+        if not config.TELEGRAM_BOT_TOKEN:
+            logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
+            raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
+
+        # Increase timeouts for Hugging Face network stability
+        self.app = (
+            Application.builder()
+            .token(config.TELEGRAM_BOT_TOKEN)
+            .connect_timeout(30)
+            .read_timeout(30)
+            .write_timeout(30)
+            .pool_timeout(30)
+            .build()
+        )
         self.chat_id = config.TELEGRAM_CHAT_ID
 
         # Register Handlers
