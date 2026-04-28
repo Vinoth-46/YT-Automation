@@ -58,9 +58,12 @@ class ProductionBot:
         # Use a reliable proxy because the official API is blocked on this server node
         proxy_url = "https://tg.i-c-a.su/bot/"
         
+        # Safety: Strip any accidental spaces from the token
+        token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
+        
         self.app = (
             Application.builder()
-            .token(config.TELEGRAM_BOT_TOKEN)
+            .token(token)
             .base_url(proxy_url)
             .connect_timeout(30)
             .read_timeout(30)
