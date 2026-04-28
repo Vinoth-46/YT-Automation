@@ -56,8 +56,8 @@ class ProductionBot:
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
         # Use a proxy base URL because api.telegram.org is unreachable from this HF node
-        # We use a reliable community proxy for Telegram
-        proxy_url = "https://tapi.cl10.net/bot" 
+        # PWRTelegram is one of the most stable proxies for restricted networks
+        proxy_url = "https://api.pwrtelegram.xyz/bot" 
         
         self.app = (
             Application.builder()
