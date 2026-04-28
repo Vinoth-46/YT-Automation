@@ -55,14 +55,11 @@ class ProductionBot:
             logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
-        # Use a proxy base URL because api.telegram.org is unreachable from this HF node
-        # tg.i-c-a.su is one of the most reliable and long-standing Telegram proxies
-        proxy_url = "https://tg.i-c-a.su/bot/" 
-        
+        # Reverting to official API with high timeouts. 
+        # Please ensure you have updated your token in HF Secrets!
         self.app = (
             Application.builder()
             .token(config.TELEGRAM_BOT_TOKEN)
-            .base_url(proxy_url)
             .connect_timeout(30)
             .read_timeout(30)
             .write_timeout(30)
