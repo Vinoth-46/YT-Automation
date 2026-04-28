@@ -1,0 +1,60 @@
+# --- KITCHA ENTERPRISES PRODUCTION PIPELINE ---
+# Copy these cells one by one into your Google Colab Notebook
+
+# ---------------------------------------------------------
+# CELL 1: MOUNT DRIVE
+# ---------------------------------------------------------
+from google.colab import drive
+drive.mount('/content/drive')
+
+# ---------------------------------------------------------
+# CELL 2: INSTALL WAV2LIP (ENGINE)
+# ---------------------------------------------------------
+import os
+WAV2LIP_DIR = '/content/Wav2Lip'
+if not os.path.exists(WAV2LIP_DIR):
+    !git clone https://github.com/Rudrabha/Wav2Lip.git {WAV2LIP_DIR}
+%cd {WAV2LIP_DIR}
+!pip install -q librosa>=0.9.0 opencv-contrib-python>=4.2.0 tqdm numba 'numpy<2.0'
+os.makedirs('checkpoints', exist_ok=True)
+# wav2lip_gan.pth — Using alternative mirror to bypass Google Drive limits
+if not os.path.exists('checkpoints/wav2lip_gan.pth'):
+    !wget -q 'https://huggingface.co/justinfan/wav2lip/resolve/main/wav2lip_gan.pth' -O checkpoints/wav2lip_gan.pth
+    print('✅ wav2lip_gan.pth downloaded from mirror')
+os.makedirs('face_detection/detection/sfd', exist_ok=True)
+if not os.path.exists('face_detection/detection/sfd/s3fd.pth'):
+    !wget -q 'https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth' -O face_detection/detection/sfd/s3fd.pth
+!sed -i 's/cv2.cv2.ROTATE_90_CLOCKWISE/cv2.ROTATE_90_CLOCKWISE/' inference.py
+
+# ---------------------------------------------------------
+# CELL 3: INSTALL PRODUCTION DEPENDENCIES
+# ---------------------------------------------------------
+%cd /content/drive/MyDrive/Automation
+!pip install -q pysubs2 edge-tts openai google-genai python-dotenv librosa==0.9.1
+!apt-get install -y fonts-noto-core -q
+print("✅ Production tools and Tamil fonts installed!")
+
+# ---------------------------------------------------------
+# CELL 4: GENERATE DAY 1 (35-45 SECONDS)
+# ---------------------------------------------------------
+# This runs the new split-screen pipeline we built today
+!python main.py --generate-day 1 --force
+
+# ---------------------------------------------------------
+# CELL 5: PREVIEW FINAL VIDEO
+# ---------------------------------------------------------
+from IPython.display import HTML
+from base64 import b64encode
+import os
+
+video_path = '/content/drive/MyDrive/Automation/output/day_01/final_video.mp4'
+if os.path.exists(video_path):
+    mp4 = open(video_path, 'rb').read()
+    data_url = 'data:video/mp4;base64,' + b64encode(mp4).decode()
+    display(HTML(f'''
+    <video width=320 height=560 controls>
+      <source src="{data_url}" type="video/mp4">
+    </video>
+    '''))
+else:
+    print('❌ Video not found. Check the logs in Cell 4 for errors.')

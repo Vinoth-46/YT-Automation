@@ -1,0 +1,24 @@
+# ── Core ──────────────────────────────────────────────────────────────────────
+requests>=2.31.0
+python-dotenv>=1.0.0
+APScheduler>=3.10.0
+
+# ── Voice: Coqui XTTS v2 (free, local, most human-like voice) ────────────────
+TTS>=0.22.0          # pip install TTS
+soundfile>=0.12.1
+numpy>=1.24.0
+librosa>=0.10.0      # for audio resampling
+
+# ── Transcription: OpenAI Whisper (free, local) ───────────────────────────────
+openai-whisper>=20231117
+
+# ── YouTube API ───────────────────────────────────────────────────────────────
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.2.0
+google-auth-oauthlib>=1.2.0
+
+# ── Optional: torch (GPU acceleration for Whisper + XTTS) ────────────────────
+# Install separately based on your CUDA version:
+# CPU only:  pip install torch torchvision torchaudio
+# CUDA 11.8: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+# CUDA 12.1: pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
