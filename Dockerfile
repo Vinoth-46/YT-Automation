@@ -17,8 +17,8 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Fix ImageMagick policy
-RUN sed -i 's/domain="path" rights="none" pattern="@\*"/domain="path" rights="read|write" pattern="@\*"/g' /etc/ImageMagick-6/policy.xml
+# Fix ImageMagick policy (Updated to work for any ImageMagick version)
+RUN find /etc/ImageMagick-* -name "policy.xml" -exec sed -i 's/domain="path" rights="none" pattern="@\*"/domain="path" rights="read|write" pattern="@\*"/g' {} +
 
 # Set up a non-root user (Required by Hugging Face)
 RUN useradd -m -u 1000 user
@@ -28,7 +28,7 @@ WORKDIR /app
 RUN mkdir -p /usr/share/fonts/truetype/noto/
 RUN ln -s /usr/share/fonts/truetype/noto/NotoSansTamil-Regular.ttf /usr/share/fonts/truetype/noto/NotoSansTamil-Bold.ttf || true
 
-# Copy requirements and install as root to ensure global availability or as user
+# Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
