@@ -55,7 +55,16 @@ class ProductionBot:
             logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
-        # Using the official API now that we have bypassed the DNS block via /etc/hosts
+        import socket
+        import httpx
+        
+        # Create a transport that forces IPv4
+        # This fixes common timeout issues on Hugging Face where IPv6 is blocked/broken
+        transport = httpx.AsyncHTTPTransport(
+            local_address=None,
+            retries=3,
+        )
+        
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
         
         self.app = (
