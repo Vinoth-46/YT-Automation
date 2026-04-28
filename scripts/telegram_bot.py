@@ -59,20 +59,16 @@ class ProductionBot:
         import httpx
         from telegram.request import HTTPXRequest
         
-        # Create a transport that forces IPv4 and has better retry logic
-        transport = httpx.AsyncHTTPTransport(
-            local_address=None,
-            retries=3,
-        )
+        # Using a fresh proxy to bypass the deep IP block on Hugging Face
+        proxy_url = "https://tgproxy.onrender.com/bot/"
         
-        # Create a custom request object using our transport
-        # This is what actually forces the bot to use IPv4
+        # Create a custom request object with the new proxy base
         request = HTTPXRequest(
             connection_pool_size=10,
-            read_timeout=30,
-            write_timeout=30,
-            connect_timeout=30,
-            pool_timeout=30,
+            read_timeout=60,
+            write_timeout=60,
+            connect_timeout=60,
+            pool_timeout=60,
         )
         
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
@@ -80,6 +76,7 @@ class ProductionBot:
         self.app = (
             Application.builder()
             .token(token)
+            .base_url(proxy_url)
             .request(request)
             .build()
         )

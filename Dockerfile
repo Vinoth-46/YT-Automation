@@ -17,8 +17,6 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Bypass Hugging Face DNS block for Telegram
-RUN echo "149.154.167.220 api.telegram.org" >> /etc/hosts || true
 
 # Fix ImageMagick policy (Updated to work for any ImageMagick version)
 RUN find /etc/ImageMagick-* -name "policy.xml" -exec sed -i 's/domain="path" rights="none" pattern="@\*"/domain="path" rights="read|write" pattern="@\*"/g' {} +
