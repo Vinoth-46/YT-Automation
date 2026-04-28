@@ -55,14 +55,12 @@ class ProductionBot:
             logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
-        # This proxy successfully bypassed the DNS block earlier
-        proxy_url = "https://tg.i-c-a.su/bot/" 
+        # Using the official API now that we have bypassed the DNS block via /etc/hosts
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
         
         self.app = (
             Application.builder()
             .token(token)
-            .base_url(proxy_url)
             .connect_timeout(60)
             .read_timeout(60)
             .write_timeout(60)
