@@ -55,8 +55,8 @@ class ProductionBot:
             logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
-        # Final proxy attempt using pwrtelegram
-        proxy_url = "https://api.pwrtelegram.xyz/bot/" 
+        # This proxy successfully bypassed the DNS block earlier
+        proxy_url = "https://tg.i-c-a.su/bot/" 
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
         
         self.app = (
