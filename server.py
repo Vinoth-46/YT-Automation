@@ -49,7 +49,8 @@ def run_bot_polling():
     try:
         logger.info("🤖 Starting Telegram Bot polling...")
         bot_instance = ProductionBot()
-        bot_instance.app.run_polling(close_loop=False)
+        # stop_signals=False is required when running in a background thread
+        bot_instance.app.run_polling(close_loop=False, stop_signals=False)
     except Exception as e:
         logger.error(f"❌ Bot Thread Crashed: {e}")
 
