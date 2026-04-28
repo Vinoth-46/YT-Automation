@@ -59,10 +59,11 @@ class ProductionBot:
         import httpx
         from telegram.request import HTTPXRequest
         
-        # Using a fresh proxy to bypass the deep IP block on Hugging Face
-        proxy_url = "https://tgproxy.onrender.com/bot/"
+        # Using the i-c-a proxy which is currently the most stable bypass
+        # Note: No trailing slash after 'bot' as the library adds the token directly
+        proxy_url = "https://tg.i-c-a.su/bot"
         
-        # Create a custom request object with the new proxy base
+        # Create a custom request object with high timeouts
         request = HTTPXRequest(
             connection_pool_size=10,
             read_timeout=60,
