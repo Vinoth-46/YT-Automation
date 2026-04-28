@@ -43,13 +43,45 @@ def cleanup_temp_files():
             except Exception as e:
                 logger.error(f"❌ Failed to clean {d}: {e}")
 
+def run_diagnostic():
+    """Check network and environment setup."""
+    logger.info("🔍 Running Network Diagnostics...")
+    
+    # 1. Check Token
+    token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+    if not token:
+        logger.error("❌ DIAGNOSTIC: TELEGRAM_BOT_TOKEN is EMPTY!")
+    else:
+        logger.info(f"✅ DIAGNOSTIC: Token found (Prefix: {token[:5]}...)")
+    
+    # 2. Check Internet (Google)
+    try:
+        import http.client
+        conn = http.client.HTTPSConnection("google.com", timeout=5)
+        conn.request("HEAD", "/")
+        res = conn.getresponse()
+        logger.info(f"✅ DIAGNOSTIC: Internet access OK (Google: {res.status})")
+    except Exception as e:
+        logger.error(f"❌ DIAGNOSTIC: No internet access? {e}")
+
+    # 3. Check Telegram API
+    try:
+        import http.client
+        conn = http.client.HTTPSConnection("api.telegram.org", timeout=5)
+        conn.request("HEAD", "/")
+        res = conn.getresponse()
+        logger.info(f"✅ DIAGNOSTIC: Telegram API reachable (HTTP {res.status})")
+    except Exception as e:
+        logger.error(f"❌ DIAGNOSTIC: Telegram API UNREACHABLE! {e}")
+
 def run_bot_polling():
     """Function to run the Telegram bot in polling mode."""
     global bot_instance
     try:
         logger.info("🤖 Starting Telegram Bot polling...")
+        # Add a small delay for network to settle
+        time.sleep(5)
         bot_instance = ProductionBot()
-        # stop_signals=False is required when running in a background thread
         bot_instance.app.run_polling(close_loop=False, stop_signals=False)
     except Exception as e:
         logger.error(f"❌ Bot Thread Crashed: {e}")
@@ -61,7 +93,10 @@ async def startup_event():
     # 1. Cleanup
     cleanup_temp_files()
     
-    # 2. Start Bot in Background Thread
+    # 2. Diagnostic
+    run_diagnostic()
+    
+    # 3. Start Bot in Background Thread
     bot_thread = threading.Thread(target=run_bot_polling, daemon=True)
     bot_thread.start()
     logger.info("🚀 Server startup complete.")
