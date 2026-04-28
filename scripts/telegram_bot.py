@@ -55,20 +55,17 @@ class ProductionBot:
             logger.error("❌ TELEGRAM_BOT_TOKEN is MISSING in environment variables!")
             raise ValueError("TELEGRAM_BOT_TOKEN not found. Did you set it in Hugging Face Secrets?")
 
-        # Use a reliable proxy because the official API is blocked on this server node
-        proxy_url = "https://tg.i-c-a.su/bot/"
-        
-        # Safety: Strip any accidental spaces from the token
+        # Reverting to official API but with an even longer 60s timeout
         token = config.TELEGRAM_BOT_TOKEN.strip().replace(" ", "")
         
         self.app = (
             Application.builder()
             .token(token)
-            .base_url(proxy_url)
-            .connect_timeout(30)
-            .read_timeout(30)
-            .write_timeout(30)
-            .pool_timeout(30)
+            .connect_timeout(60)
+            .read_timeout(60)
+            .write_timeout(60)
+            .pool_timeout(60)
+            .get_updates_read_timeout(60)
             .build()
         )
         self.chat_id = config.TELEGRAM_CHAT_ID
