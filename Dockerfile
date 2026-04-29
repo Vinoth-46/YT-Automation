@@ -1,51 +1,27 @@
-FROM python:3.12-slim
+# Use an official Python runtime as a parent image
+FROM python:3.10-slim
 
-# Set environment variables
-ENV PYTHONDONTWRITEBYTECODE=1
-ENV PYTHONUNBUFFERED=1
-ENV PORT=7860
-
-# Install system dependencies
-USER root
+# Install system dependencies (FFmpeg is crucial for video automation)
 RUN apt-get update && apt-get install -y \
     ffmpeg \
-    fonts-noto-core \
-    fonts-noto-ui-core \
-    fonts-noto-extra \
-    imagemagick \
-    curl \
-    && apt-get clean \
+    libsm6 \
+    libxext6 \
     && rm -rf /var/lib/apt/lists/*
 
-
-# Fix ImageMagick policy (Updated to work for any ImageMagick version)
-RUN find /etc/ImageMagick-* -name "policy.xml" -exec sed -i 's/domain="path" rights="none" pattern="@\*"/domain="path" rights="read|write" pattern="@\*"/g' {} +
-
-# Set up a non-root user (Required by Hugging Face)
-RUN useradd -m -u 1000 user
+# Set the working directory in the container
 WORKDIR /app
 
-# Ensure Tamil font is in the expected location
-RUN mkdir -p /usr/share/fonts/truetype/noto/
-RUN ln -s /usr/share/fonts/truetype/noto/NotoSansTamil-Regular.ttf /usr/share/fonts/truetype/noto/NotoSansTamil-Bold.ttf || true
-
-# Copy requirements and install
+# Copy the requirements file into the container
 COPY requirements.txt .
+
+# Install any needed packages specified in requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy the rest of the application and set ownership
-COPY --chown=user:user . .
+# Copy the rest of the application code
+COPY . .
 
-# Create necessary directories and set permissions
-RUN mkdir -p output data logs credentials assets/fonts assets/music assets/watermark \
-    && chown -R user:user /app
+# Create necessary directories
+RUN mkdir -p assets outputs temp credentials
 
-# Switch to non-root user
-USER user
-ENV PATH="/home/user/.local/bin:$PATH"
-
-# Expose the port
-EXPOSE 7860
-
-# Run the server
-CMD ["python", "server.py"]
+# Command to run the bot
+CMD ["python", "-m", "bot.main"]
