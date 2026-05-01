@@ -9,10 +9,11 @@ logger = logging.getLogger(__name__)
 
 class AudioEngine:
     def __init__(self):
-        self.model_name = "gemini-3.1-flash-tts-preview"
+        self.primary_model = "gemini-2.5-flash-preview-tts"
+        self.fallback_model = "gemini-3.1-flash-tts-preview"
 
     async def generate_narration(self, script_data, job_id, mode="publish"):
-        """Generate narration using Gemini TTS with gTTS fallback."""
+        """Generate narration using Gemini TTS with fallbacks."""
         text = script_data.get("narration", "")
         if not text:
             logger.error(f"Job {job_id}: No narration text found in script_data")
@@ -21,26 +22,36 @@ class AudioEngine:
         output_filename = f"{job_id}_narration.wav"
         output_path = os.path.join(settings.OUTPUT_DIR, output_filename)
 
-        # Primary: Gemini TTS (with timeout)
+        # Primary: Gemini 2.5 TTS
         try:
-            logger.info(f"Job {job_id}: Attempting Gemini TTS...")
+            logger.info(f"Job {job_id}: Attempting Gemini TTS (Primary: {self.primary_model})...")
             result = await asyncio.wait_for(
-                self._generate_gemini_tts(text, output_path, job_id),
-                timeout=120  # 2 minute timeout
+                self._generate_gemini_tts(text, output_path, job_id, self.primary_model),
+                timeout=120
             )
             if result:
                 return result
-        except asyncio.TimeoutError:
-            logger.error(f"Job {job_id}: Gemini TTS timed out after 120s. Falling back to gTTS...")
         except Exception as e:
-            logger.error(f"Job {job_id}: Gemini TTS failed: {e}. Falling back to gTTS...")
+            logger.error(f"Job {job_id}: Primary TTS ({self.primary_model}) failed: {e}. Trying fallback Gemini model...")
 
-        # Fallback: gTTS (always works, no API quota)
+        # Fallback 1: Gemini 3.1 TTS
+        try:
+            logger.info(f"Job {job_id}: Attempting Gemini TTS (Fallback: {self.fallback_model})...")
+            result = await asyncio.wait_for(
+                self._generate_gemini_tts(text, output_path, job_id, self.fallback_model),
+                timeout=120
+            )
+            if result:
+                return result
+        except Exception as e:
+            logger.error(f"Job {job_id}: Fallback TTS ({self.fallback_model}) failed: {e}. Trying gTTS...")
+
+        # Fallback 2: gTTS (always works, no API quota)
         logger.info(f"Job {job_id}: Using gTTS fallback...")
         return await self._generate_gtts(text, output_path, job_id)
 
-    async def _generate_gemini_tts(self, text, output_path, job_id):
-        """Generate high-quality Tamil audio using Gemini TTS."""
+    async def _generate_gemini_tts(self, text, output_path, job_id, model_name):
+        """Generate high-quality Tamil audio using a specific Gemini TTS model."""
         try:
             from google import genai
             from google.genai import types
@@ -54,11 +65,11 @@ class AudioEngine:
                 f"\n\n{text}"
             )
 
-            logger.info(f"Job {job_id}: Calling Gemini TTS model {self.model_name}...")
+            logger.info(f"Job {job_id}: Calling Gemini TTS model {model_name}...")
             
             response = await asyncio.to_thread(
                 client.models.generate_content,
-                model=self.model_name,
+                model=model_name,
                 contents=prompt,
                 config=types.GenerateContentConfig(
                     response_modalities=["audio"],
