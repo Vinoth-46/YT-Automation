@@ -4,14 +4,12 @@ from apscheduler.triggers.cron import CronTrigger
 from sqlalchemy import select
 from core.database import Database
 from core.models import Schedule, User
-from core.orchestrator import Orchestrator
 
 logger = logging.getLogger(__name__)
 
 class SchedulerService:
     def __init__(self):
         self.scheduler = AsyncIOScheduler()
-        self.orchestrator = Orchestrator()
 
     def start(self):
         self.scheduler.start()
@@ -45,9 +43,11 @@ class SchedulerService:
 
     async def _run_scheduled_task(self, schedule_id):
         """The actual task that runs when scheduled."""
+        from core.orchestrator import Orchestrator
         logger.info(f"Running scheduled task for schedule {schedule_id}")
-        job_id = await self.orchestrator.create_job(schedule_id=schedule_id)
-        await self.orchestrator.run_pipeline(job_id)
+        orchestrator = Orchestrator()
+        job_id = await orchestrator.create_job(schedule_id=schedule_id)
+        await orchestrator.run_pipeline(job_id)
 
     def stop(self):
         self.scheduler.shutdown()

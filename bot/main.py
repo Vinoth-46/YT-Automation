@@ -2,14 +2,13 @@ import os
 import logging
 import asyncio
 import signal
+import traceback
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 from bot.handlers import (
     start_command, status_command, generate_command, 
     schedule_command, view_schedule_command, cancel_command, button_callback
 )
 from core.config import settings
-from core.database import Database, init_db
-from core.scheduler import SchedulerService
 import uvicorn
 from fastapi import FastAPI
 from telegram import Bot, BotCommand
@@ -21,7 +20,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-scheduler_service = SchedulerService()
 app = FastAPI()
 
 # Global reference for graceful shutdown
@@ -49,41 +47,46 @@ async def post_init(application):
         logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
     except Exception as e:
         logger.error(f"=== MENU FAILED: {e} ===")
+        logger.error(traceback.format_exc())
 
-    # Step 2: Initialize database
+    # Step 2: Initialize database (non-fatal)
     try:
+        from core.database import Database, init_db
         await init_db()
         logger.info("=== DATABASE INITIALIZED ===")
     except Exception as e:
-        logger.error(f"=== DATABASE FAILED: {e} ===")
+        logger.error(f"=== DATABASE FAILED (non-fatal): {e} ===")
+        logger.error(traceback.format_exc())
 
-    # Step 3: Start scheduler
+    # Step 3: Start scheduler (non-fatal)
     try:
-        await scheduler_service.load_schedules()
-        scheduler_service.start()
+        from core.scheduler import SchedulerService
+        scheduler = SchedulerService()
+        await scheduler.load_schedules()
+        scheduler.start()
+        # Store on the application for later cleanup
+        application.bot_data["scheduler"] = scheduler
         logger.info("=== SCHEDULER STARTED ===")
     except Exception as e:
-        logger.error(f"=== SCHEDULER FAILED: {e} ===")
+        logger.error(f"=== SCHEDULER FAILED (non-fatal): {e} ===")
+        logger.error(traceback.format_exc())
 
 async def post_stop(application):
     """Run before bot shutdown."""
-    scheduler_service.stop()
-    await Database.close()
+    try:
+        scheduler = application.bot_data.get("scheduler")
+        if scheduler:
+            scheduler.stop()
+    except Exception as e:
+        logger.error(f"Scheduler stop error: {e}")
+    
+    try:
+        from core.database import Database
+        await Database.close()
+    except Exception as e:
+        logger.error(f"Database close error: {e}")
+    
     logger.info("Bot post-stop completed")
-
-async def graceful_shutdown():
-    """Gracefully stop the bot and polling."""
-    global _application
-    logger.info("=== GRACEFUL SHUTDOWN INITIATED ===")
-    if _application:
-        try:
-            await _application.updater.stop()
-            await _application.stop()
-            await _application.shutdown()
-            logger.info("=== BOT STOPPED CLEANLY ===")
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-    _shutdown_event.set()
 
 async def run_bot():
     global _application
@@ -99,7 +102,7 @@ async def run_bot():
         logger.warning(f"Could not clear stale sessions: {e}")
     
     # Small delay to let any previous instance fully release the getUpdates lock
-    await asyncio.sleep(2)
+    await asyncio.sleep(3)
     
     application = (
         ApplicationBuilder()
@@ -126,9 +129,13 @@ async def run_bot():
             drop_pending_updates=True,
             allowed_updates=["message", "callback_query"],
         )
-        logger.info("Bot is now polling for messages!")
+        logger.info("=== BOT IS NOW POLLING FOR MESSAGES! ===")
         # Wait until shutdown is signaled
         await _shutdown_event.wait()
+        # Gracefully stop within the context manager
+        logger.info("=== STOPPING BOT POLLING ===")
+        await application.updater.stop()
+        await application.stop()
 
 async def main():
     port = int(os.environ.get("PORT", 8000))
@@ -138,10 +145,14 @@ async def main():
     # Wire up SIGTERM/SIGINT for graceful shutdown (Render sends SIGTERM)
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(
-            sig,
-            lambda: asyncio.create_task(graceful_shutdown())
-        )
+        try:
+            loop.add_signal_handler(
+                sig,
+                lambda: _shutdown_event.set()
+            )
+        except NotImplementedError:
+            # Windows doesn't support add_signal_handler
+            logger.warning(f"Signal handler for {sig} not supported on this platform")
     
     await asyncio.gather(
         server.serve(),
