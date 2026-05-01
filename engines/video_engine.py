@@ -80,15 +80,17 @@ class VideoEngine:
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 cmd = [
                     "ffmpeg", "-y", "-i", p,
+                    "-threads", "1",  # Crucial for 512MB RAM limits
                     "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                    "-max_muxing_queue_size", "1024",
                     "-an",  # Strip audio
                     processed_path
                 ]
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
                 
                 if process.returncode == 0 and os.path.exists(processed_path):
                     processed_clips.append(processed_path)
@@ -126,7 +128,7 @@ class VideoEngine:
             # Step 3: Merge with audio
             logger.info(f"FFmpeg: Merging video with audio...")
             merge_cmd = [
-                "ffmpeg", "-y",
+                "ffmpeg", "-y", "-threads", "1",
                 "-stream_loop", "-1",  # Loop video if shorter than audio
                 "-i", concat_output,
                 "-i", audio_path,
