@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class AudioEngine:
     def __init__(self):
-        self.primary_model = "gemini-2.5-flash-preview-tts"
+        self.primary_model = "gemini-2.0-flash-preview-tts"   # Correct model ID
         self.fallback_model = "gemini-3.1-flash-tts-preview"
 
     async def generate_narration(self, script_data, job_id, mode="publish"):
@@ -31,8 +31,11 @@ class AudioEngine:
             )
             if result:
                 return result
+        except asyncio.TimeoutError:
+            logger.error(f"Job {job_id}: Primary TTS timed out after 120s. Trying fallback Gemini model...")
         except Exception as e:
-            logger.error(f"Job {job_id}: Primary TTS ({self.primary_model}) failed: {e}. Trying fallback Gemini model...")
+            logger.error(f"Job {job_id}: Primary TTS ({self.primary_model}) failed: {e}")
+            logger.error(traceback.format_exc())
 
         # Fallback 1: Gemini 3.1 TTS
         try:
@@ -43,8 +46,11 @@ class AudioEngine:
             )
             if result:
                 return result
+        except asyncio.TimeoutError:
+            logger.error(f"Job {job_id}: Fallback TTS timed out after 120s. Trying gTTS...")
         except Exception as e:
-            logger.error(f"Job {job_id}: Fallback TTS ({self.fallback_model}) failed: {e}. Trying gTTS...")
+            logger.error(f"Job {job_id}: Fallback TTS ({self.fallback_model}) failed: {e}")
+            logger.error(traceback.format_exc())
 
         # Fallback 2: gTTS (always works, no API quota)
         logger.info(f"Job {job_id}: Using gTTS fallback...")
