@@ -18,15 +18,19 @@ scheduler_service = SchedulerService()
 app = FastAPI()
 
 @app.get("/")
+@app.head("/")
 async def health_check():
     return {"status": "online", "bot": "running"}
 
 async def post_init(application):
     """Run after bot initialization."""
-    await init_db()
-    await scheduler_service.load_schedules()
-    scheduler_service.start()
-    logging.info("Bot post-init completed")
+    try:
+        await init_db()
+        await scheduler_service.load_schedules()
+        scheduler_service.start()
+        logging.info("Bot post-init completed")
+    except Exception as e:
+        logging.error(f"Post-init error: {e}")
 
 async def post_stop(application):
     """Run before bot shutdown."""
@@ -44,14 +48,14 @@ async def run_bot():
     application.add_handler(CommandHandler('schedule', schedule_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    logging.info("Bot is starting...")
+    logging.info("Bot is starting polling...")
     async with application:
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
-        # Keep the bot running
-        while True:
-            await asyncio.sleep(1)
+        # Keep the bot running without a busy loop
+        await asyncio.Event().wait()
+
 
 async def main():
     # Run both the health check server and the Telegram bot
