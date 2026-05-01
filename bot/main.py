@@ -70,7 +70,7 @@ async def run_bot():
     async with application:
         await application.initialize()
         await application.start()
-        await application.updater.start_polling()
+        await application.updater.start_polling(drop_pending_updates=True)
         # Keep the bot running without a busy loop
         await asyncio.Event().wait()
 
