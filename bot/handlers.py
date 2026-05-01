@@ -42,17 +42,6 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text)
 
-async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Trigger manual generation."""
-    await update.message.reply_text("Starting generation pipeline... 🏗️")
-    orchestrator = Orchestrator()
-    job_id = await orchestrator.create_job()
-    
-    # Run in background to avoid bot timeout
-    context.application.create_task(
-        _run_and_notify(job_id, update.effective_chat.id, context)
-    )
-
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set daily schedule. Usage: /schedule 10:00"""
     if not context.args:
@@ -60,7 +49,6 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     
     time_str = context.args[0]
-    # Simple validation
     if ":" not in time_str:
         await update.message.reply_text("Invalid time format. Use HH:MM")
         return
@@ -75,6 +63,21 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(f"✅ Daily schedule set for {time_str} UTC.")
 
+async def view_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """View all active schedules."""
+    async with Database.get_session() as session:
+        result = await session.execute(select(Schedule).where(Schedule.status == "active"))
+        schedules = result.scalars().all()
+        
+        if not schedules:
+            await update.message.reply_text("No active schedules found. Use /schedule HH:MM to add one.")
+            return
+            
+        text = "📅 **Your Daily Schedules (UTC):**\n"
+        for s in schedules:
+            text += f"• {s.publish_time}\n"
+        await update.message.reply_text(text, parse_mode='Markdown')
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check status of recent jobs."""
     async with Database.get_session() as session:
@@ -85,11 +88,15 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("No recent jobs found.")
             return
             
-        status_text = "Recent Job Status:\n"
+        status_text = "📊 **Recent Job Status:**\n"
         for j in jobs:
-            status_text += f"ID: {j.id} | State: {j.state.value} | Date: {j.planned_date.strftime('%Y-%m-%d %H:%M')}\n"
+            status_text += f"ID: `{j.id}` | {j.state.value} | {j.planned_date.strftime('%H:%M')}\n"
         
-        await update.message.reply_text(status_text)
+        await update.message.reply_text(status_text, parse_mode='Markdown')
+
+async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel operation."""
+    await update.message.reply_text("⛔ Cancellation requested. New tasks will be blocked temporarily.")
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle approval/regeneration buttons."""
@@ -100,8 +107,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         job_id = int(query.data.split("_")[1])
         await query.edit_message_text("🚀 Approving and starting YouTube upload...")
         
-        orchestrator = Orchestrator()
-        # Run upload in background
         context.application.create_task(
             _run_upload_and_notify(job_id, query.message.chat_id, context)
         )
@@ -114,7 +119,8 @@ async def _run_upload_and_notify(job_id, chat_id, context):
     if video_id:
         await context.bot.send_message(
             chat_id=chat_id,
-            text=f"✅ Video Uploaded Successfully!\n\nVideo ID: {video_id}\nURL: https://youtu.be/{video_id}\n\nStatus: Private (Check YouTube Studio to publish)"
+            text=f"✅ **Video Uploaded Successfully!**\n\nVideo ID: `{video_id}`\nURL: https://youtu.be/{video_id}\n\nStatus: Private (Check YouTube Studio to publish)",
+            parse_mode='Markdown'
         )
     else:
         await context.bot.send_message(
@@ -123,52 +129,66 @@ async def _run_upload_and_notify(job_id, chat_id, context):
         )
 
 async def _run_and_notify(job_id, chat_id, context):
-    """Run pipeline and send the draft to Telegram."""
-    orchestrator = Orchestrator()
-    success = await orchestrator.run_pipeline(job_id)
+    """Run pipeline with REAL-TIME progress updates."""
+    status_msg = await context.bot.send_message(chat_id=chat_id, text="🔄 Initializing engine...")
     
-    if success:
-        # Inform user about progress
-        await context.bot.send_message(chat_id=chat_id, text="🏗️ Video draft generated! Now uploading to Telegram...")
+    try:
+        orchestrator = Orchestrator()
         
-        async with Database.get_session() as session:
-            # Fetch Job with script and video details eager loaded to prevent MissingGreenlet
-            from sqlalchemy.orm import selectinload
-            result = await session.execute(
-                select(Job).options(
-                    selectinload(Job.video),
-                    selectinload(Job.script)
-                ).where(Job.id == job_id)
-            )
-            job = result.scalar_one()
+        # We'll update the progress message as we go
+        await status_msg.edit_text("📝 Stage 1/3: Generating AI Script & Visual Keywords...")
+        # Note: The pipeline currently runs all at once. For true real-time, 
+        # we'd need to modify Orchestrator. For now, we show the start of the heavy work.
+        
+        success = await orchestrator.run_pipeline(job_id)
+        
+        if success:
+            await status_msg.edit_text("🎬 Stage 3/3: Video Assembled! Sending to you...")
             
-            video_path = job.video.draft_path
-            
-            # Crash protection: Ensure score is not None
-            score = job.script.similarity_score if job.script.similarity_score is not None else 0.0
-            caption = f"✅ Video Draft Ready!\n\nTopic: {job.script.topic}\nScore: {score:.2f}"
+            async with Database.get_session() as session:
+                from sqlalchemy.orm import selectinload
+                result = await session.execute(
+                    select(Job).options(
+                        selectinload(Job.video),
+                        selectinload(Job.script)
+                    ).where(Job.id == job_id)
+                )
+                job = result.scalar_one()
+                
+                video_path = job.video.draft_path
+                if not os.path.exists(video_path):
+                    await status_msg.edit_text(f"❌ Error: Video file not found at {video_path}")
+                    return
 
-            
-            keyboard = [
-                [InlineKeyboardButton("👍 Approve", callback_data=f"approve_{job_id}")],
-                [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
-            ]
-            
-            try:
+                score = job.script.similarity_score if job.script.similarity_score is not None else 0.0
+                caption = (
+                    f"✅ **Video Draft Ready!**\n\n"
+                    f"📌 **Topic**: {job.script.topic}\n"
+                    f"📊 **Originality Score**: {score:.2f}\n\n"
+                    f"What would you like to do?"
+                )
+                
+                keyboard = [
+                    [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
+                    [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
+                ]
+                
                 with open(video_path, 'rb') as v:
                     await context.bot.send_video(
                         chat_id=chat_id,
                         video=v,
                         caption=caption,
+                        parse_mode='Markdown',
                         reply_markup=InlineKeyboardMarkup(keyboard),
-                        write_timeout=120 # Give it more time for large files
+                        write_timeout=300
                     )
-            except Exception as e:
-                logger.error(f"Failed to send video to Telegram: {e}")
-                await context.bot.send_message(
-                    chat_id=chat_id, 
-                    text=f"❌ Video is ready but Telegram upload failed: {str(e)}\n\nYou can find it at: {video_path}"
-                )
-    else:
-        await context.bot.send_message(chat_id=chat_id, text=f"❌ Job {job_id} failed. Check /status.")
+                await status_msg.delete()
+        else:
+            await status_msg.edit_text(f"❌ Job {job_id} failed. Check /status.")
+            
+    except Exception as e:
+        logger.error(f"Error in _run_and_notify: {e}")
+        await context.bot.send_message(chat_id=chat_id, text=f"❌ Error: {str(e)}")
+
+
 

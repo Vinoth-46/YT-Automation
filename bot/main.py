@@ -1,12 +1,16 @@
 import logging
 import asyncio
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
-from bot.handlers import start_command, status_command, generate_command, schedule_command, button_callback
+from bot.handlers import (
+    start_command, status_command, generate_command, 
+    schedule_command, view_schedule_command, cancel_command, button_callback
+)
 from core.config import settings
 from core.database import Database, init_db
 from core.scheduler import SchedulerService
 import uvicorn
 from fastapi import FastAPI
+from telegram import BotCommand
 
 # Configure logging
 logging.basicConfig(
@@ -28,7 +32,19 @@ async def post_init(application):
         await init_db()
         await scheduler_service.load_schedules()
         scheduler_service.start()
-        logging.info("Bot post-init completed")
+        
+        # Set up the command menu in Telegram
+        commands = [
+            BotCommand("start", "Start the bot and get welcome message"),
+            BotCommand("generate", "Generate a new video now"),
+            BotCommand("status", "Check recent job status"),
+            BotCommand("schedule", "Set daily posting time (UTC)"),
+            BotCommand("view_schedule", "View active schedules"),
+            BotCommand("cancel", "Cancel current process")
+        ]
+        await application.bot.set_my_commands(commands)
+        
+        logging.info("Bot post-init completed and menu configured")
     except Exception as e:
         logging.error(f"Post-init error: {e}")
 
@@ -46,6 +62,8 @@ async def run_bot():
     application.add_handler(CommandHandler('status', status_command))
     application.add_handler(CommandHandler('generate', generate_command))
     application.add_handler(CommandHandler('schedule', schedule_command))
+    application.add_handler(CommandHandler('view_schedule', view_schedule_command))
+    application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
     logging.info("Bot is starting polling...")
@@ -55,6 +73,7 @@ async def run_bot():
         await application.updater.start_polling()
         # Keep the bot running without a busy loop
         await asyncio.Event().wait()
+
 
 
 async def main():
