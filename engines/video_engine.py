@@ -8,7 +8,7 @@ from core.config import settings
 logger = logging.getLogger(__name__)
 
 MAX_SCENES = 6          # Hard cap on scenes to limit memory
-CLIP_DURATION = 5       # Trim each clip to 5s — enough to show concept
+CLIP_DURATION = 10      # 10s per clip × 6 scenes = ~60s video (ideal for YouTube Shorts)
 OUTPUT_W = 480          # Width (portrait)
 OUTPUT_H = 854          # Height (portrait 9:16)
 OUTPUT_FPS = 24         # Lower FPS = less memory
