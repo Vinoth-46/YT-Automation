@@ -14,7 +14,10 @@ class Database:
             cls.engine = create_async_engine(
                 settings.POSTGRES_URL,
                 echo=False,
-                future=True
+                future=True,
+                pool_size=10,
+                max_overflow=20,
+                pool_pre_ping=True
             )
             cls.async_session = async_sessionmaker(
                 cls.engine, 
