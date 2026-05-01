@@ -1,8 +1,8 @@
 import os
 import logging
-import ffmpeg
-import requests
 import asyncio
+import aiohttp
+import traceback
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -16,85 +16,152 @@ class VideoEngine:
         output_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.mp4")
         scenes = script_data.get("scenes", [])
         
+        logger.info(f"Job {job_id}: Starting video assembly with {len(scenes)} scenes")
+        
+        if not scenes:
+            logger.error(f"Job {job_id}: No scenes found in script_data")
+            return None
+
         # 1. Gather Assets
         scene_assets = await self._gather_assets(job_id, scenes)
         if not scene_assets:
+            logger.error(f"Job {job_id}: No visual assets gathered — cannot render video")
             return None
 
-        # 2. Add Overlay Information (Captions/Subtitles)
-        # (This could involve calling a Whisper-based captioning engine later)
-        
-        # 3. Final Render with FFmpeg
+        logger.info(f"Job {job_id}: Gathered {len(scene_assets)} video assets, starting FFmpeg render")
+
+        # 2. Final Render with FFmpeg
         success = await self._render_ffmpeg(scene_assets, narration_path, output_path)
-        return output_path if success else None
+        
+        if success and os.path.exists(output_path):
+            file_size = os.path.getsize(output_path)
+            logger.info(f"Job {job_id}: Video rendered successfully ({file_size // 1024}KB)")
+            return output_path
+        else:
+            logger.error(f"Job {job_id}: FFmpeg render failed or output file not found")
+            return None
 
     async def _gather_assets(self, job_id, scenes):
-        """Fetch stock videos or generate AI video scenes."""
+        """Fetch stock videos from Pexels (async)."""
         assets = []
         used_video_ids = set()
         
-        for i, scene in enumerate(scenes):
-            query = scene.get("visual_query", "civil engineering")
-            # Logic for hybrid: Try stock first, then maybe AI generation for 'hero' scenes
-            asset_url = await self._search_pexels(query, used_video_ids)
-            if asset_url:
-                local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
-                await self._download_file(asset_url, local_path)
-                assets.append(local_path)
+        async with aiohttp.ClientSession() as session:
+            for i, scene in enumerate(scenes):
+                query = scene.get("visual_query", "civil engineering")
+                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
+                
+                asset_url = await self._search_pexels(session, query, used_video_ids)
+                if asset_url:
+                    local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
+                    downloaded = await self._download_file(session, asset_url, local_path)
+                    if downloaded and os.path.exists(local_path):
+                        file_size = os.path.getsize(local_path)
+                        logger.info(f"Job {job_id}: Scene {i+1} downloaded ({file_size // 1024}KB)")
+                        assets.append(local_path)
+                    else:
+                        logger.warning(f"Job {job_id}: Scene {i+1} download failed")
+                else:
+                    logger.warning(f"Job {job_id}: Scene {i+1} — no Pexels results for '{query}'")
+        
         return assets
 
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
-        """Concatenate clips and sync with audio."""
+        """Concatenate clips and sync with audio using FFmpeg subprocess."""
         try:
-            # For MVP: Simple concatenation and loop to match audio duration
-            # (In production, use complex filters for transitions and text overlays)
-            input_audio = ffmpeg.input(audio_path)
+            # Build a concat file for FFmpeg
+            concat_file = output_path.replace(".mp4", "_concat.txt")
+            with open(concat_file, "w") as f:
+                for p in scene_paths:
+                    # Escape single quotes in paths
+                    safe_path = p.replace("'", "'\\''")
+                    f.write(f"file '{safe_path}'\n")
             
-            # Normalize all inputs to exact 720x1280 @ 30fps for successful concatenation
-            video_streams = []
-            for p in scene_paths:
-                v = ffmpeg.input(p).video
-                # Scale to fill 720x1280 (increase), crop exact, set 30fps
-                v = v.filter('scale', 720, 1280, force_original_aspect_ratio='increase')
-                v = v.filter('crop', 720, 1280)
-                v = v.filter('fps', fps=30, round='up')
-                v = v.filter('format', 'yuv420p')
-                video_streams.append(v)
+            logger.info(f"FFmpeg: Concat file created with {len(scene_paths)} clips")
             
-            # Note: Concat filters can be complex in ffmpeg-python. 
-            # We'll stick to a simplified version for now.
-            v = ffmpeg.concat(*video_streams, v=1, a=0).node
+            # Step 1: Concatenate all video clips into a single raw video
+            concat_output = output_path.replace(".mp4", "_concat.mp4")
             
-            out = ffmpeg.output(
-                v[0], input_audio, output_path,
-                vcodec='libx264', acodec='aac', shortest=None,
-                pix_fmt='yuv420p'
-            ).overwrite_output()
+            concat_cmd = [
+                "ffmpeg", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", concat_file,
+                "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                "-c:v", "libx264", "-preset", "fast",
+                "-an",  # No audio in this step
+                concat_output
+            ]
             
-            # Run in executor to not block async loop
-            loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, lambda: out.run(capture_stdout=True, capture_stderr=True))
+            logger.info(f"FFmpeg: Running concat command...")
+            process = await asyncio.create_subprocess_exec(
+                *concat_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            
+            if process.returncode != 0 and not os.path.exists(concat_output):
+                logger.error(f"FFmpeg concat failed: {stderr.decode()[-500:]}")
+                return False
+            
+            logger.info(f"FFmpeg: Concat done, merging with audio...")
+            
+            # Step 2: Merge concatenated video with audio
+            merge_cmd = [
+                "ffmpeg", "-y",
+                "-stream_loop", "-1",  # Loop video if shorter than audio
+                "-i", concat_output,
+                "-i", audio_path,
+                "-c:v", "libx264", "-preset", "fast",
+                "-c:a", "aac", "-b:a", "128k",
+                "-shortest",  # Stop when shortest stream ends
+                "-pix_fmt", "yuv420p",
+                "-movflags", "+faststart",
+                output_path
+            ]
+            
+            process = await asyncio.create_subprocess_exec(
+                *merge_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            
+            # Clean up temp files
+            for f in [concat_file, concat_output]:
+                if os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except Exception:
+                        pass
+            
+            if process.returncode != 0:
+                stderr_text = stderr.decode()[-500:]
+                logger.error(f"FFmpeg merge failed: {stderr_text}")
+                # FFmpeg sometimes exits non-zero but still produces a valid file
+                if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
+                    logger.info(f"Output file exists despite FFmpeg error — using it")
+                    return True
+                return False
+            
             return True
-        except ffmpeg.Error as e:
-            error_message = e.stderr.decode() if e.stderr else str(e)
-            logger.error(f"FFmpeg render reported error: {error_message}")
-            # FFmpeg often returns non-zero exit codes on EOF when stream lengths mismatch,
-            # even though it successfully rendered the complete file. Check if the file exists.
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 1024 * 1024:
-                logger.info(f"Output video {output_path} generated successfully despite ffmpeg warning.")
-                return True
+            
+        except asyncio.TimeoutError:
+            logger.error("FFmpeg timed out after 300 seconds")
             return False
         except Exception as e:
             logger.error(f"FFmpeg render exception: {e}")
+            logger.error(traceback.format_exc())
+            # Check if file was created anyway
+            if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
+                logger.info(f"Output file exists despite exception — using it")
+                return True
             return False
 
-    async def _search_pexels(self, query, used_video_ids):
-        """Search Pexels API with technical fallbacks to ensure 100% relevance."""
-        # Clean the query
+    async def _search_pexels(self, session, query, used_video_ids):
+        """Search Pexels API with technical fallbacks (async)."""
         query = query.strip().lower()
         
-        # Define fallback chain for common civil engineering terms
-        # If the specific action fails, try these related but still technical terms
         fallbacks = [
             query,
             f"construction {query}",
@@ -107,34 +174,55 @@ class VideoEngine:
         for q in fallbacks:
             url = f"https://api.pexels.com/videos/search?query={q}&per_page=15&orientation=portrait"
             try:
-                response = requests.get(url, headers=headers)
-                data = response.json()
-                
-                if data.get("videos"):
-                    for video in data["videos"]:
-                        vid_id = video.get("id")
-                        if vid_id not in used_video_ids:
-                            used_video_ids.add(vid_id)
-                            # Return the best quality link
-                            video_files = video.get("video_files", [])
-                            if video_files:
-                                logger.info(f"Pexels match found for query '{q}'")
-                                return video_files[0]["link"]
+                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                    if response.status != 200:
+                        logger.warning(f"Pexels API returned {response.status} for '{q}'")
+                        continue
+                    
+                    data = await response.json()
+                    
+                    if data.get("videos"):
+                        for video in data["videos"]:
+                            vid_id = video.get("id")
+                            if vid_id not in used_video_ids:
+                                used_video_ids.add(vid_id)
+                                video_files = video.get("video_files", [])
+                                # Find a reasonable quality file (not too large for free tier)
+                                for vf in video_files:
+                                    width = vf.get("width", 0)
+                                    if 480 <= width <= 1080:
+                                        logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
+                                        return vf["link"]
+                                # Fallback to first file
+                                if video_files:
+                                    logger.info(f"Pexels match (fallback quality): '{q}' → video {vid_id}")
+                                    return video_files[0]["link"]
+            except asyncio.TimeoutError:
+                logger.warning(f"Pexels timeout for query '{q}'")
             except Exception as e:
                 logger.error(f"Pexels error for query '{q}': {e}")
                 
-        logger.warning(f"No technical matches found for '{query}' or its fallbacks.")
+        logger.warning(f"No Pexels results for '{query}' or fallbacks")
         return None
 
-
-    async def _download_file(self, url, path):
-        """Download asset locally."""
+    async def _download_file(self, session, url, path):
+        """Download asset locally (async with progress)."""
         try:
-            response = requests.get(url, stream=True)
-            with open(path, "wb") as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    f.write(chunk)
-            return True
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+                if response.status != 200:
+                    logger.error(f"Download failed: HTTP {response.status} for {url[:80]}")
+                    return False
+                
+                with open(path, "wb") as f:
+                    async for chunk in response.content.iter_chunked(8192):
+                        f.write(chunk)
+            
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                return True
+            return False
+        except asyncio.TimeoutError:
+            logger.error(f"Download timed out: {url[:80]}")
+            return False
         except Exception as e:
             logger.error(f"Download failed: {e}")
             return False
