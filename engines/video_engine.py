@@ -67,96 +67,106 @@ class VideoEngine:
         return assets
 
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
-        """Concatenate clips and sync with audio using FFmpeg subprocess."""
+        """Standardize clips, concatenate, and sync with audio using FFmpeg."""
+        processed_clips = []
+        concat_file = None
+        concat_output = None
+        
         try:
-            # Build a concat file for FFmpeg
+            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to standard 720x1280 format...")
+            
+            # Step 1: Pre-process each clip individually
+            for idx, p in enumerate(scene_paths):
+                processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
+                cmd = [
+                    "ffmpeg", "-y", "-i", p,
+                    "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                    "-an",  # Strip audio
+                    processed_path
+                ]
+                process = await asyncio.create_subprocess_exec(
+                    *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
+                
+                if process.returncode == 0 and os.path.exists(processed_path):
+                    processed_clips.append(processed_path)
+                else:
+                    logger.warning(f"FFmpeg failed to process clip {p}: {stderr.decode()[-300:]}")
+            
+            if not processed_clips:
+                logger.error("FFmpeg: All clips failed pre-processing")
+                return False
+
+            # Step 2: Concatenate standard clips
             concat_file = output_path.replace(".mp4", "_concat.txt")
             with open(concat_file, "w") as f:
-                for p in scene_paths:
-                    # Escape single quotes in paths
-                    safe_path = p.replace("'", "'\\''")
-                    f.write(f"file '{safe_path}'\n")
+                for p in processed_clips:
+                    f.write(f"file '{p.replace('\"', '')}'\n")
             
-            logger.info(f"FFmpeg: Concat file created with {len(scene_paths)} clips")
-            
-            # Step 1: Concatenate all video clips into a single raw video
             concat_output = output_path.replace(".mp4", "_concat.mp4")
-            
             concat_cmd = [
-                "ffmpeg", "-y",
-                "-f", "concat", "-safe", "0",
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
-                "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
-                "-c:v", "libx264", "-preset", "fast",
-                "-an",  # No audio in this step
+                "-c", "copy",  # Fast copy since they are already identical format
                 concat_output
             ]
             
-            logger.info(f"FFmpeg: Running concat command...")
+            logger.info(f"FFmpeg: Concatenating {len(processed_clips)} standard clips...")
             process = await asyncio.create_subprocess_exec(
-                *concat_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *concat_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=120)
             
-            if process.returncode != 0 and not os.path.exists(concat_output):
+            if process.returncode != 0:
                 logger.error(f"FFmpeg concat failed: {stderr.decode()[-500:]}")
                 return False
-            
-            logger.info(f"FFmpeg: Concat done, merging with audio...")
-            
-            # Step 2: Merge concatenated video with audio
+                
+            # Step 3: Merge with audio
+            logger.info(f"FFmpeg: Merging video with audio...")
             merge_cmd = [
                 "ffmpeg", "-y",
                 "-stream_loop", "-1",  # Loop video if shorter than audio
                 "-i", concat_output,
                 "-i", audio_path,
-                "-c:v", "libx264", "-preset", "fast",
+                "-c:v", "copy",  # Copy video stream directly
                 "-c:a", "aac", "-b:a", "128k",
-                "-shortest",  # Stop when shortest stream ends
-                "-pix_fmt", "yuv420p",
+                "-shortest",  # Stop when audio ends
                 "-movflags", "+faststart",
                 output_path
             ]
             
             process = await asyncio.create_subprocess_exec(
-                *merge_cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
+                *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
-            
-            # Clean up temp files
-            for f in [concat_file, concat_output]:
-                if os.path.exists(f):
-                    try:
-                        os.remove(f)
-                    except Exception:
-                        pass
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
             
             if process.returncode != 0:
-                stderr_text = stderr.decode()[-500:]
-                logger.error(f"FFmpeg merge failed: {stderr_text}")
-                # FFmpeg sometimes exits non-zero but still produces a valid file
+                logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
+                # FFmpeg sometimes exits non-zero but still produces valid file
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
-                    logger.info(f"Output file exists despite FFmpeg error — using it")
                     return True
                 return False
-            
+                
             return True
             
         except asyncio.TimeoutError:
-            logger.error("FFmpeg timed out after 300 seconds")
+            logger.error("FFmpeg process timed out")
             return False
         except Exception as e:
             logger.error(f"FFmpeg render exception: {e}")
             logger.error(traceback.format_exc())
-            # Check if file was created anyway
-            if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
-                logger.info(f"Output file exists despite exception — using it")
-                return True
             return False
+        finally:
+            # Clean up temp files
+            files_to_clean = processed_clips + [concat_file, concat_output]
+            for f in files_to_clean:
+                if f and os.path.exists(f):
+                    try:
+                        os.remove(f)
+                    except Exception:
+                        pass
 
     async def _search_pexels(self, session, query, used_video_ids):
         """Search Pexels API with technical fallbacks (async)."""
