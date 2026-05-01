@@ -28,12 +28,8 @@ async def health_check():
 
 async def post_init(application):
     """Run after bot initialization."""
+    # Step 1: Always set up the command menu (no DB needed)
     try:
-        await init_db()
-        await scheduler_service.load_schedules()
-        scheduler_service.start()
-        
-        # Set up the command menu in Telegram
         commands = [
             BotCommand("start", "Start the bot and get welcome message"),
             BotCommand("generate", "Generate a new video now"),
@@ -43,10 +39,24 @@ async def post_init(application):
             BotCommand("cancel", "Cancel current process")
         ]
         await application.bot.set_my_commands(commands)
-        
-        logging.info("Bot post-init completed and menu configured")
+        logging.info("Telegram command menu configured")
     except Exception as e:
-        logging.error(f"Post-init error: {e}")
+        logging.error(f"Failed to set command menu: {e}")
+
+    # Step 2: Initialize database (may fail on first deploy)
+    try:
+        await init_db()
+        logging.info("Database initialized successfully")
+    except Exception as e:
+        logging.error(f"Database init failed: {e}")
+
+    # Step 3: Start scheduler
+    try:
+        await scheduler_service.load_schedules()
+        scheduler_service.start()
+        logging.info("Scheduler started")
+    except Exception as e:
+        logging.error(f"Scheduler failed: {e}")
 
 async def post_stop(application):
     """Run before bot shutdown."""
