@@ -28,6 +28,10 @@ RUN mkdir -p assets outputs temp credentials
 # Expose the port for Render's health check
 EXPOSE 8000
 
-# Command to run the bot
-CMD ["python", "bot/main.py"]
+# Set PYTHONPATH to ensure 'bot' and other modules are found
+ENV PYTHONPATH=/app
+
+# Command to run the bot as a module
+CMD ["python", "-m", "bot.main"]
+
 
