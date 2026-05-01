@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Global reference for graceful shutdown
+# Global reference  shutdown
 _application = None
 _shutdown_event = asyncio.Event()
 
