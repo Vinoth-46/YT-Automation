@@ -12,14 +12,24 @@ logger = logging.getLogger(__name__)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
     user = update.effective_user
-    # Ensure user exists in DB
-    async with Database.get_session() as session:
-        result = await session.execute(select(User).where(User.telegram_id == user.id))
-        db_user = result.scalar_one_or_none()
-        if not db_user:
-            db_user = User(telegram_id=user.id, timezone="UTC")
-            session.add(db_user)
-            await session.commit()
+    logger.info(f"Received /start command from user {user.id} ({user.first_name})")
+    
+    try:
+        # Ensure user exists in DB
+        async with Database.get_session() as session:
+            logger.info(f"Checking database for user {user.id}...")
+            result = await session.execute(select(User).where(User.telegram_id == user.id))
+            db_user = result.scalar_one_or_none()
+            if not db_user:
+                logger.info(f"Creating new user {user.id} in database...")
+                db_user = User(telegram_id=user.id, timezone="UTC")
+                session.add(db_user)
+                await session.commit()
+            logger.info(f"Database check completed for user {user.id}")
+    except Exception as e:
+        logger.error(f"Database error in start_command: {e}")
+        # We continue anyway to at least show the welcome message
+
 
     welcome_text = (
         f"வணக்கம் {user.first_name}! 👋\n\n"
