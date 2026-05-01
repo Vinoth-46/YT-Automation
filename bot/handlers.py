@@ -42,6 +42,22 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await update.message.reply_text(welcome_text)
 
+async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Trigger manual generation."""
+    await update.message.reply_text(
+        "🚀 Starting generation pipeline...\n"
+        "⚠️ Note: Please wait for this to finish before starting another one to avoid AI rate limits (1 video every 2-3 minutes recommended)."
+    )
+    
+    orchestrator = Orchestrator()
+    job_id = await orchestrator.create_job()
+    
+    # Run in background to avoid bot timeout
+    context.application.create_task(
+        _run_and_notify(job_id, update.effective_chat.id, context)
+    )
+
+
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set daily schedule. Usage: /schedule 10:00"""
     if not context.args:
