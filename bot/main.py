@@ -119,6 +119,10 @@ async def run_bot():
     application = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)
+        .connect_timeout(30.0)
+        .read_timeout(30.0)
+        .write_timeout(30.0)
+        .pool_timeout(30.0)
         .post_stop(post_stop)
         .updater(None)      # ← Disable polling updater; we use webhook
         .build()
