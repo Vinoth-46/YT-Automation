@@ -11,7 +11,7 @@ from bot.handlers import (
 from core.config import settings
 import uvicorn
 from fastapi import FastAPI
-from telegram import Bot, BotCommand
+from telegram import Bot, BotCommand, MenuButtonCommands
 
 # Configure logging
 logging.basicConfig(
@@ -31,25 +31,39 @@ _shutdown_event = asyncio.Event()
 async def health_check():
     return {"status": "online", "bot": "running"}
 
-async def post_init(application):
-    """Run after bot initialization."""
-    # Step 1: Always set up the command menu (no DB needed)
-    try:
-        commands = [
-            BotCommand("start", "Start the bot and get welcome message"),
-            BotCommand("generate", "Generate a new video now"),
-            BotCommand("status", "Check recent job status"),
-            BotCommand("schedule", "Set daily posting time (UTC)"),
-            BotCommand("view_schedule", "View active schedules"),
-            BotCommand("cancel", "Cancel current process")
-        ]
-        await application.bot.set_my_commands(commands)
-        logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
-    except Exception as e:
-        logger.error(f"=== MENU FAILED: {e} ===")
-        logger.error(traceback.format_exc())
+async def setup_bot_commands(bot):
+    """Register bot commands and menu button. Called directly on the bot object."""
+    commands = [
+        BotCommand("start", "Start the bot and get welcome message"),
+        BotCommand("generate", "Generate a new video now"),
+        BotCommand("status", "Check recent job status"),
+        BotCommand("schedule", "Set daily posting time (UTC)"),
+        BotCommand("view_schedule", "View active schedules"),
+        BotCommand("cancel", "Cancel current process")
+    ]
+    
+    # Step 1: Delete old commands first to force refresh
+    logger.info("Deleting old bot commands...")
+    await bot.delete_my_commands()
+    logger.info("Old commands deleted.")
+    
+    # Step 2: Set new commands
+    logger.info("Setting new bot commands...")
+    result = await bot.set_my_commands(commands)
+    logger.info(f"set_my_commands returned: {result}")
+    
+    # Step 3: Explicitly set the menu button to show commands list
+    logger.info("Setting menu button to MenuButtonCommands...")
+    await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
+    logger.info("Menu button set to commands mode.")
+    
+    # Step 4: Verify commands were set
+    registered = await bot.get_my_commands()
+    logger.info(f"Verified {len(registered)} commands registered: {[c.command for c in registered]}")
 
-    # Step 2: Initialize database (non-fatal)
+async def init_services(application):
+    """Initialize database and scheduler (non-fatal if they fail)."""
+    # Initialize database
     try:
         from core.database import Database, init_db
         await init_db()
@@ -58,13 +72,12 @@ async def post_init(application):
         logger.error(f"=== DATABASE FAILED (non-fatal): {e} ===")
         logger.error(traceback.format_exc())
 
-    # Step 3: Start scheduler (non-fatal)
+    # Start scheduler
     try:
         from core.scheduler import SchedulerService
         scheduler = SchedulerService()
         await scheduler.load_schedules()
         scheduler.start()
-        # Store on the application for later cleanup
         application.bot_data["scheduler"] = scheduler
         logger.info("=== SCHEDULER STARTED ===")
     except Exception as e:
@@ -107,7 +120,6 @@ async def run_bot():
     application = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)
-        .post_init(post_init)
         .post_stop(post_stop)
         .build()
     )
@@ -124,6 +136,17 @@ async def run_bot():
     
     logger.info("Bot is starting...")
     async with application:
+        # Register commands BEFORE starting - this runs with the bot fully initialized
+        try:
+            await setup_bot_commands(application.bot)
+            logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
+        except Exception as e:
+            logger.error(f"=== MENU SETUP FAILED: {e} ===")
+            logger.error(traceback.format_exc())
+        
+        # Initialize DB and scheduler (non-fatal)
+        await init_services(application)
+        
         await application.start()
         await application.updater.start_polling(
             drop_pending_updates=True,
@@ -151,7 +174,6 @@ async def main():
                 lambda: _shutdown_event.set()
             )
         except NotImplementedError:
-            # Windows doesn't support add_signal_handler
             logger.warning(f"Signal handler for {sig} not supported on this platform")
     
     await asyncio.gather(
