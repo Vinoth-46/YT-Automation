@@ -25,8 +25,8 @@ COPY . .
 # Create necessary directories
 RUN mkdir -p assets outputs temp credentials
 
-# Expose the port for Render's health check
-EXPOSE 8000
+# Expose port 7860 (required by Hugging Face Spaces)
+EXPOSE 7860
 
 # Set PYTHONPATH to ensure 'bot' and other modules are found
 ENV PYTHONPATH=/app

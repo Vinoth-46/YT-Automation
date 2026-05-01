@@ -4,14 +4,15 @@ import asyncio
 import signal
 import traceback
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
+from telegram import Bot, BotCommand, MenuButtonCommands, Update
 from bot.handlers import (
-    start_command, status_command, generate_command, 
+    start_command, status_command, generate_command,
     schedule_command, view_schedule_command, cancel_command, button_callback
 )
 from core.config import settings
 import uvicorn
-from fastapi import FastAPI
-from telegram import Bot, BotCommand, MenuButtonCommands
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import JSONResponse
 
 # Configure logging
 logging.basicConfig(
@@ -22,17 +23,40 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# Global reference for graceful shutdown
+# Global application reference
 _application = None
-_shutdown_event = asyncio.Event()
+
+
+# ─────────────────────────── Health Check ────────────────────────────
 
 @app.get("/")
 @app.head("/")
 async def health_check():
-    return {"status": "online", "bot": "running"}
+    return {"status": "online", "bot": "running", "mode": "webhook"}
+
+
+# ─────────────────────────── Webhook Endpoint ─────────────────────────
+
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    """Receive updates from Telegram and dispatch to handlers."""
+    global _application
+    if _application is None:
+        return Response(status_code=503)
+    try:
+        data = await request.json()
+        update = Update.de_json(data, _application.bot)
+        await _application.process_update(update)
+    except Exception as e:
+        logger.error(f"Webhook processing error: {e}")
+        logger.error(traceback.format_exc())
+    return Response(status_code=200)
+
+
+# ─────────────────────────── Bot Setup ────────────────────────────────
 
 async def setup_bot_commands(bot):
-    """Register bot commands and menu button. Called directly on the bot object."""
+    """Register bot commands and menu button."""
     commands = [
         BotCommand("start", "Start the bot and get welcome message"),
         BotCommand("generate", "Generate a new video now"),
@@ -41,38 +65,26 @@ async def setup_bot_commands(bot):
         BotCommand("view_schedule", "View active schedules"),
         BotCommand("cancel", "Cancel current process")
     ]
-    
-    # Step 1: Delete old commands first to force refresh
     logger.info("Deleting old bot commands...")
     await bot.delete_my_commands()
-    logger.info("Old commands deleted.")
-    
-    # Step 2: Set new commands
     logger.info("Setting new bot commands...")
-    result = await bot.set_my_commands(commands)
-    logger.info(f"set_my_commands returned: {result}")
-    
-    # Step 3: Explicitly set the menu button to show commands list
-    logger.info("Setting menu button to MenuButtonCommands...")
+    await bot.set_my_commands(commands)
     await bot.set_chat_menu_button(menu_button=MenuButtonCommands())
-    logger.info("Menu button set to commands mode.")
-    
-    # Step 4: Verify commands were set
     registered = await bot.get_my_commands()
     logger.info(f"Verified {len(registered)} commands registered: {[c.command for c in registered]}")
+    logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
+
 
 async def init_services(application):
     """Initialize database and scheduler (non-fatal if they fail)."""
-    # Initialize database
     try:
-        from core.database import Database, init_db
+        from core.database import init_db
         await init_db()
         logger.info("=== DATABASE INITIALIZED ===")
     except Exception as e:
         logger.error(f"=== DATABASE FAILED (non-fatal): {e} ===")
         logger.error(traceback.format_exc())
 
-    # Start scheduler
     try:
         from core.scheduler import SchedulerService
         scheduler = SchedulerService()
@@ -84,6 +96,7 @@ async def init_services(application):
         logger.error(f"=== SCHEDULER FAILED (non-fatal): {e} ===")
         logger.error(traceback.format_exc())
 
+
 async def post_stop(application):
     """Run before bot shutdown."""
     try:
@@ -92,40 +105,27 @@ async def post_stop(application):
             scheduler.stop()
     except Exception as e:
         logger.error(f"Scheduler stop error: {e}")
-    
     try:
         from core.database import Database
         await Database.close()
     except Exception as e:
         logger.error(f"Database close error: {e}")
-    
     logger.info("Bot post-stop completed")
+
 
 async def run_bot():
     global _application
-    
-    # Clear any stale getUpdates session from a previous instance
-    logger.info("Clearing stale Telegram sessions...")
-    try:
-        temp_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
-        async with temp_bot:
-            await temp_bot.delete_webhook(drop_pending_updates=True)
-        logger.info("=== STALE SESSIONS CLEARED ===")
-    except Exception as e:
-        logger.warning(f"Could not clear stale sessions: {e}")
-    
-    # Small delay to let any previous instance fully release the getUpdates lock
-    await asyncio.sleep(3)
-    
+
     application = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)
         .post_stop(post_stop)
+        .updater(None)      # ← Disable polling updater; we use webhook
         .build()
     )
     _application = application
-    
-    # Handlers
+
+    # Register handlers
     application.add_handler(CommandHandler('start', start_command))
     application.add_handler(CommandHandler('status', status_command))
     application.add_handler(CommandHandler('generate', generate_command))
@@ -133,53 +133,58 @@ async def run_bot():
     application.add_handler(CommandHandler('view_schedule', view_schedule_command))
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CallbackQueryHandler(button_callback))
-    
-    logger.info("Bot is starting...")
+
     async with application:
-        # Register commands BEFORE starting - this runs with the bot fully initialized
-        try:
-            await setup_bot_commands(application.bot)
-            logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
-        except Exception as e:
-            logger.error(f"=== MENU SETUP FAILED: {e} ===")
-            logger.error(traceback.format_exc())
-        
-        # Initialize DB and scheduler (non-fatal)
+        await setup_bot_commands(application.bot)
         await init_services(application)
-        
         await application.start()
-        await application.updater.start_polling(
-            drop_pending_updates=True,
-            allowed_updates=["message", "callback_query"],
-        )
-        logger.info("=== BOT IS NOW POLLING FOR MESSAGES! ===")
-        # Wait until shutdown is signaled
-        await _shutdown_event.wait()
-        # Gracefully stop within the context manager
-        logger.info("=== STOPPING BOT POLLING ===")
-        await application.updater.stop()
-        await application.stop()
+
+        # ── Set webhook URL on Telegram ──────────────────────────────
+        # HF Spaces sets SPACE_HOST automatically, e.g. "username-spacename.hf.space"
+        space_host = os.environ.get("SPACE_HOST", "")
+        webhook_url = os.environ.get("WEBHOOK_URL", "")
+
+        if not webhook_url and space_host:
+            webhook_url = f"https://{space_host}/webhook"
+
+        if webhook_url:
+            await application.bot.set_webhook(
+                url=webhook_url,
+                allowed_updates=["message", "callback_query"],
+                drop_pending_updates=True
+            )
+            logger.info(f"=== WEBHOOK SET: {webhook_url} ===")
+        else:
+            logger.warning("No webhook URL configured — bot will not receive updates!")
+            logger.warning("Set WEBHOOK_URL or deploy to Hugging Face Spaces (SPACE_HOST is auto-set).")
+
+        logger.info("=== BOT IS NOW RUNNING IN WEBHOOK MODE! ===")
+
+        # Keep running forever until killed
+        await asyncio.Event().wait()
+
 
 async def main():
-    port = int(os.environ.get("PORT", 8000))
-    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    # HF Spaces requires port 7860. Falls back to PORT env var, then 7860.
+    port = int(os.environ.get("PORT", os.environ.get("HF_PORT", 7860)))
+    logger.info(f"Starting web server on port {port}...")
+
+    config = uvicorn.Config(app, host="0.0.0.0", port=port, log_level="warning")
     server = uvicorn.Server(config)
-    
-    # Wire up SIGTERM/SIGINT for graceful shutdown (Render sends SIGTERM)
+
+    # Graceful shutdown on SIGTERM / SIGINT
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGTERM, signal.SIGINT):
         try:
-            loop.add_signal_handler(
-                sig,
-                lambda: _shutdown_event.set()
-            )
+            loop.add_signal_handler(sig, lambda: asyncio.create_task(server.shutdown()))
         except NotImplementedError:
-            logger.warning(f"Signal handler for {sig} not supported on this platform")
-    
+            logger.warning(f"Signal handler for {sig} not supported")
+
     await asyncio.gather(
         server.serve(),
         run_bot()
     )
+
 
 if __name__ == '__main__':
     asyncio.run(main())
