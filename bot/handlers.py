@@ -213,20 +213,29 @@ async def _run_upload_and_notify(job_id, chat_id, context):
 
 
 async def _run_and_notify(job_id, chat_id, context):
-    """Run pipeline with REAL-TIME progress updates."""
+    """Run pipeline with REAL-TIME progress updates via callback."""
     status_msg = await context.bot.send_message(chat_id=chat_id, text="🔄 Initializing engine...")
+    
+    # Track last message to avoid editing with the same text
+    last_text = [""]
+    
+    async def progress_callback(text):
+        """Update the Telegram status message in real-time."""
+        if text != last_text[0]:
+            last_text[0] = text
+            try:
+                await status_msg.edit_text(text)
+            except Exception as e:
+                logger.warning(f"Could not update progress message: {e}")
     
     try:
         from core.orchestrator import Orchestrator
         orchestrator = Orchestrator()
         
-        # We'll update the progress message as we go
-        await status_msg.edit_text("📝 Stage 1/3: Generating AI Script & Visual Keywords...")
-        
-        success = await orchestrator.run_pipeline(job_id)
+        success = await orchestrator.run_pipeline(job_id, progress_callback=progress_callback)
         
         if success:
-            await status_msg.edit_text("🎬 Stage 3/3: Video Assembled! Sending to you...")
+            await status_msg.edit_text("📤 Sending video to Telegram...")
             
             Database = _get_db()
             Job, _, _, _, _, _ = _get_models()
@@ -240,16 +249,27 @@ async def _run_and_notify(job_id, chat_id, context):
                 )
                 job = result.scalar_one()
                 
+                if not job.video:
+                    await status_msg.edit_text("❌ Error: No video asset found in database")
+                    return
+                
                 video_path = job.video.draft_path
                 if not os.path.exists(video_path):
                     await status_msg.edit_text(f"❌ Error: Video file not found at {video_path}")
                     return
 
-                score = job.script.similarity_score if job.script.similarity_score is not None else 0.0
+                file_size = os.path.getsize(video_path)
+                if file_size < 1024:
+                    await status_msg.edit_text(f"❌ Error: Video file too small ({file_size} bytes)")
+                    return
+
+                score = job.script.similarity_score if job.script and job.script.similarity_score is not None else 0.0
+                topic = job.script.topic if job.script else "Unknown"
                 caption = (
                     f"✅ Video Draft Ready!\n\n"
-                    f"📌 Topic: {job.script.topic}\n"
-                    f"📊 Originality Score: {score:.2f}\n\n"
+                    f"📌 Topic: {topic}\n"
+                    f"📊 Originality Score: {score:.2f}\n"
+                    f"📦 File Size: {file_size // 1024}KB\n\n"
                     f"What would you like to do?"
                 )
                 
@@ -264,11 +284,12 @@ async def _run_and_notify(job_id, chat_id, context):
                         video=v,
                         caption=caption,
                         reply_markup=InlineKeyboardMarkup(keyboard),
-                        write_timeout=300
+                        write_timeout=300,
+                        read_timeout=300
                     )
                 await status_msg.delete()
         else:
-            await status_msg.edit_text(f"❌ Job {job_id} failed. Check /status.")
+            await status_msg.edit_text(f"❌ Job {job_id} failed. Use /status to check details.")
             
     except Exception as e:
         logger.error(f"Error in _run_and_notify: {e}")
