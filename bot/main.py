@@ -1,3 +1,4 @@
+import os
 import logging
 import asyncio
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
@@ -17,6 +18,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
+logger = logging.getLogger(__name__)
 
 scheduler_service = SchedulerService()
 app = FastAPI()
@@ -39,33 +41,39 @@ async def post_init(application):
             BotCommand("cancel", "Cancel current process")
         ]
         await application.bot.set_my_commands(commands)
-        logging.info("Telegram command menu configured")
+        logger.info("=== MENU CONFIGURED SUCCESSFULLY ===")
     except Exception as e:
-        logging.error(f"Failed to set command menu: {e}")
+        logger.error(f"=== MENU FAILED: {e} ===")
 
-    # Step 2: Initialize database (may fail on first deploy)
+    # Step 2: Initialize database
     try:
         await init_db()
-        logging.info("Database initialized successfully")
+        logger.info("=== DATABASE INITIALIZED ===")
     except Exception as e:
-        logging.error(f"Database init failed: {e}")
+        logger.error(f"=== DATABASE FAILED: {e} ===")
 
     # Step 3: Start scheduler
     try:
         await scheduler_service.load_schedules()
         scheduler_service.start()
-        logging.info("Scheduler started")
+        logger.info("=== SCHEDULER STARTED ===")
     except Exception as e:
-        logging.error(f"Scheduler failed: {e}")
+        logger.error(f"=== SCHEDULER FAILED: {e} ===")
 
 async def post_stop(application):
     """Run before bot shutdown."""
     scheduler_service.stop()
     await Database.close()
-    logging.info("Bot post-stop completed")
+    logger.info("Bot post-stop completed")
 
 async def run_bot():
-    application = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
+    application = (
+        ApplicationBuilder()
+        .token(settings.TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .post_stop(post_stop)
+        .build()
+    )
     
     # Handlers
     application.add_handler(CommandHandler('start', start_command))
@@ -76,18 +84,15 @@ async def run_bot():
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    logging.info("Bot is starting polling...")
+    logger.info("Bot is starting...")
     async with application:
-        await application.initialize()
         await application.start()
         await application.updater.start_polling(drop_pending_updates=True)
-        # Keep the bot running without a busy loop
+        logger.info("Bot is now polling for messages!")
+        # Keep the bot running
         await asyncio.Event().wait()
 
-
-
 async def main():
-    # Run both the health check server and the Telegram bot
     port = int(os.environ.get("PORT", 8000))
     config = uvicorn.Config(app, host="0.0.0.0", port=port)
     server = uvicorn.Server(config)
@@ -98,6 +103,4 @@ async def main():
     )
 
 if __name__ == '__main__':
-    import os
     asyncio.run(main())
-
