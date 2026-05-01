@@ -13,19 +13,28 @@ class Settings(BaseSettings):
     TELEGRAM_CHAT_ID: int
     HF_TOKEN: str = ""
 
-    # MongoDB Config
-    MONGODB_URL: str = "mongodb://localhost:27017"
-    DATABASE_NAME: str = "yt_automation"
+    # PostgreSQL Config
+    POSTGRES_URL: str = "postgresql+asyncpg://user:password@localhost/yt_automation"
+
+    # Engine Config
+    TTS_PRIMARY_MODEL: str = "xtts-v2"
+    TTS_FALLBACK_MODEL: str = "piper"
+    WHISPER_MODEL: str = "base"
+    
+    # YouTube Config
+    YOUTUBE_CLIENT_SECRET_FILE: str = os.path.join("credentials", "client_secret.json")
+    YOUTUBE_SCOPES: list = ["https://www.googleapis.com/auth/youtube.upload", "https://www.googleapis.com/auth/youtube.force-ssl"]
 
     # Paths
     BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     OUTPUT_DIR: str = os.path.join(BASE_DIR, "outputs")
     TEMP_DIR: str = os.path.join(BASE_DIR, "temp")
     ASSETS_DIR: str = os.path.join(BASE_DIR, "assets")
+    CREDENTIALS_DIR: str = os.path.join(BASE_DIR, "credentials")
 
     # App Config
-    DEFAULT_LANGUAGE: str = "ta"  # Tamil
-    VOICE_PROFILE: str = "Puck"  # Gemini voice name (placeholder)
+    DEFAULT_LANGUAGE: str = "ta"
+    SIMILARITY_THRESHOLD: float = 0.7
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -35,3 +44,4 @@ settings = Settings()
 os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
 os.makedirs(settings.TEMP_DIR, exist_ok=True)
 os.makedirs(settings.ASSETS_DIR, exist_ok=True)
+os.makedirs(settings.CREDENTIALS_DIR, exist_ok=True)

@@ -1,41 +1,47 @@
-from motor.motor_asyncio import AsyncIOMotorClient
+from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from .config import settings
 import logging
 
 logger = logging.getLogger(__name__)
 
 class Database:
-    client: AsyncIOMotorClient = None
-    db = None
+    engine = None
+    async_session = None
 
     @classmethod
-    async def connect(cls):
+    def connect(cls):
         try:
-            cls.client = AsyncIOMotorClient(settings.MONGODB_URL)
-            cls.db = cls.client[settings.DATABASE_NAME]
-            # Verify connection
-            await cls.client.admin.command('ping')
-            logger.info("Successfully connected to MongoDB")
+            cls.engine = create_async_engine(
+                settings.POSTGRES_URL,
+                echo=False,
+                future=True
+            )
+            cls.async_session = async_sessionmaker(
+                cls.engine, 
+                expire_on_commit=False, 
+                class_=AsyncSession
+            )
+            logger.info("Successfully configured PostgreSQL connection")
         except Exception as e:
-            logger.error(f"Could not connect to MongoDB: {e}")
+            logger.error(f"Could not configure PostgreSQL: {e}")
             raise
 
     @classmethod
     async def close(cls):
-        if cls.client:
-            cls.client.close()
-            logger.info("MongoDB connection closed")
+        if cls.engine:
+            await cls.engine.dispose()
+            logger.info("PostgreSQL connection closed")
 
     @classmethod
-    def get_collection(cls, name: str):
-        return cls.db[name]
+    def get_session(cls) -> AsyncSession:
+        return cls.async_session()
 
-# Helper collections
-def get_jobs_collection():
-    return Database.get_collection("jobs")
-
-def get_scripts_collection():
-    return Database.get_collection("scripts")
-
-def get_settings_collection():
-    return Database.get_collection("settings")
+# Database initialization helper
+async def init_db():
+    from .models import Base
+    Database.connect()
+    async with Database.engine.begin() as conn:
+        # This will create tables if they don't exist
+        # In production, use Alembic for migrations
+        await conn.run_sync(Base.metadata.create_all)
+    logger.info("Database tables initialized")

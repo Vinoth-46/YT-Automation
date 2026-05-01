@@ -1,8 +1,12 @@
 fastapi
 uvicorn
 python-telegram-bot
-motor
-google-generativeai
+sqlalchemy[asyncio]
+asyncpg
+google-genai
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
 python-dotenv
 requests
 aiohttp
@@ -12,3 +16,6 @@ pillow
 pydantic
 pydantic-settings
 bcrypt
+apscheduler
+gTTS
+numpy

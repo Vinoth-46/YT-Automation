@@ -1,105 +1,194 @@
-import google.generativeai as genai
+import asyncio
 from core.config import settings
-from core.database import get_scripts_collection
+from core.database import Database
+from core.models import ScriptAsset
+from sqlalchemy import select, desc
 import logging
 import json
 import re
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
 
-# Configure Gemini
-genai.configure(api_key=settings.GEMINI_API_KEY)
-
 class ScriptEngine:
-    def __init__(self, model_name="gemini-1.5-flash"):
-        self.model = genai.GenerativeModel(model_name)
+    def __init__(self):
+        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
+        self.model_name = 'gemini-2.5-flash'
 
-    async def generate_topic(self, existing_topics=None):
-        """Generate a fresh civil engineering topic in Tamil and English."""
-        prompt = (
-            "Generate a unique and highly engaging civil engineering topic for a 60-second YouTube Short. "
-            "The topic should be educational, surprising, or solving a common construction problem. "
-            "Provide the output in JSON format with 'title_en' and 'title_ta' keys. "
-            f"Avoid these topics: {existing_topics or 'None'}"
+    async def _generate_content(self, prompt, max_retries=3):
+        """Make an async request to Gemini API with retries and a fallback model."""
+        # --- Cool-down Delay for Free Tier ---
+        await asyncio.sleep(8)
+        
+        models_to_try = [self.model_name, 'gemini-3-flash-preview', 'gemini-2.0-flash']
+        
+        for model in models_to_try:
+            for attempt in range(max_retries):
+                try:
+                    # We use asyncio.to_thread because the new google-genai client's async support
+                    # is currently best invoked via thread pool for simple generate_content calls
+                    response = await asyncio.to_thread(
+                        self.client.models.generate_content,
+                        model=model,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            temperature=0.9,
+                        )
+                    )
+                    logger.info(f"Gemini API success with model {model} on attempt {attempt+1}")
+                    return response.text
+                except Exception as e:
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
+                        logger.warning(f"Rate limit hit for {model}: {e}. Falling back to next model immediately.")
+                        break # Skip remaining retries for this model and go to the next one
+                        
+                    wait_time = (2 ** attempt) * 2
+                    logger.warning(f"Gemini API error with {model} (attempt {attempt+1}): {e}. Retrying in {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+
+        logger.error("All Gemini API models and retries failed.")
+        return None
+
+    async def generate_full_content(self, existing_topics=None):
+        """Mega-Prompt: Generate Topic and Script with Kitchaa's Enterprises branding."""
+        business_details = (
+            "Name: Nirmal .B.E(Civil)\n"
+            "Business: Kitchaa's Enterprises\n"
+            "Phone: 8344051846\n"
+            "Email: Kitchaasenterprise@gmail.com\n"
+            "Services: 1. Building Approvals, 2. Complete Construction & Consulting, "
+            "3. Building Plans & Bank Estimates, 4. Bank Loan Assistance & Finance"
         )
         
-        response = self.model.generate_content(prompt)
-        try:
-            # Clean response text in case of markdown formatting
-            text = re.search(r'\{.*\}', response.text, re.DOTALL).group()
-            return json.loads(text)
-        except Exception as e:
-            logger.error(f"Failed to parse topic JSON: {e}")
-            return {"title_en": "Modern Bridge Engineering", "title_ta": "நவீன பாலம் பொறியியல்"}
-
-    async def generate_script(self, topic, retry_count=0):
-        """Generate a full script in Tamil with hook, body, and CTA."""
-        variation_instruction = ""
-        if retry_count > 0:
-            variation_instruction = "IMPORTANT: Use a completely different hook style and explanation pattern than usual to avoid repetition."
-
         prompt = (
-            f"Write a 60-second YouTube Shorts script for the civil engineering topic: {topic['title_en']}. "
-            "Language: Tamil. "
-            f"{variation_instruction} "
-            "Structure: "
-            "1. Hook (3-5 seconds) - Grab attention. "
-            "2. Educational Body (45-50 seconds) - Explain clearly with technical terms but simple Tamil. "
-            "3. Call to Action (5-10 seconds). "
-            "Also provide a 'narration' field which is the text to be spoken, and 'scenes' which is a list of visual descriptions for each part. "
-            "Include 'metadata' with title, description, and tags. "
-            "Format: JSON."
+            f"You are an expert Civil Engineering content creator for YouTube Shorts. "
+            "TASK: Generate a unique topic AND a full 60-second script in ONE go. "
+            f"EXCLUDE these previous topics: {existing_topics or 'None'}. "
+            "\n\nBRANDING REQUIREMENTS:\n"
+            f"You MUST promote this business in the script and metadata:\n{business_details}\n\n"
+            "1. TOPIC: A viral-style civil engineering mystery, hack, or fact.\n"
+            "2. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
+            "   CRITICAL: The CTA must say: 'உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises!' "
+            "and mention contacting Nirmal at 8344051846.\n"
+            "3. VISUALS: Provide highly specific English 'visual_query' for technical construction actions.\n"
+            "4. METADATA (SEO): The YouTube description MUST include the full Business Name, Contact Number, "
+            "Email, and the 4 key services listed above to reach a wider audience.\n\n"
+            "OUTPUT FORMAT (JSON ONLY):\n"
+            "{\n"
+            "  'topic': {'title_en': '...', 'title_ta': '...'},\n"
+            "  'script': {\n"
+            "    'narration': '...', \n"
+            "    'scenes': [\n"
+            "      {'visual_query': 'specific technical action'}\n"
+            "    ],\n"
+            "    'metadata': {'title': '...', 'description': '...', 'tags': [...]}\n"
+            "  }\n"
+            "}"
         )
 
-        response = self.model.generate_content(prompt)
+        response_text = await self._generate_content(prompt)
+
+        if not response_text:
+            return None
+            
         try:
-            text = re.search(r'\{.*\}', response.text, re.DOTALL).group()
+            text = re.search(r'\{.*\}', response_text, re.DOTALL).group()
+            data = json.loads(text)
+            
+            # Perform similarity check on the combined output
+            similarity_score = await self.calculate_similarity(data['script'].get("narration", ""))
+            data['script']["similarity_score"] = similarity_score
+            
+            if similarity_score > settings.SIMILARITY_THRESHOLD:
+                logger.warning(f"Similarity {similarity_score} high. Retrying Mega-Prompt...")
+                return await self.generate_full_content(existing_topics)
+                
+            return data
+        except Exception as e:
+            logger.error(f"Mega-Prompt parsing failed: {e}")
+            return None
+
+
+    async def generate_topic(self, existing_topics=None):
+        """Generate a fresh civil engineering topic."""
+        prompt = (
+            "Generate a unique and highly engaging civil engineering topic for a 120-second YouTube Short. "
+            "Focus on construction hacks, engineering marvels, or educational myths. "
+            "Provide output in JSON ONLY: {'title_en': '...', 'title_ta': '...'}. "
+            f"Avoid these existing topics: {existing_topics or 'None'}"
+        )
+        
+        response_text = await self._generate_content(prompt)
+        if not response_text:
+            return {"title_en": "Concrete Durability Tips", "title_ta": "கான்கிரீட் ஆயுள் குறிப்புகள்"}
+        try:
+            text = re.search(r'\{.*\}', response_text, re.DOTALL).group()
+            return json.loads(text)
+        except Exception as e:
+            logger.error(f"Failed to parse topic: {e}")
+            return {"title_en": "Concrete Durability Tips", "title_ta": "கான்கிரீட் ஆயுள் குறிப்புகள்"}
+
+    async def generate_script(self, topic, retry_count=0):
+        """Generate a script with monetization safety (diversity)."""
+        variation = ""
+        if retry_count > 0:
+            variation = "CRITICAL: Use a completely unique hook style (e.g., 'Did you know?', 'Stop doing this...', 'The secret of...') and a different explanation structure to ensure originality."
+
+        prompt = (
+            f"Write a 60-second YouTube Shorts script in Tamil for: {topic['title_en']}. "
+            f"{variation} "
+            "Requirements: "
+            "1. Hook (5s) "
+            "2. Body (50s) with technical civil engineering terms. "
+            "3. CTA (5s). "
+            "Provide ONLY valid JSON exactly matching this structure: "
+            "{'narration': 'Full Tamil script here', "
+            "'scenes': [{'visual_query': 'specific english search term for stock video'}], "
+            "'metadata': {'title': '...', 'description': '...', 'tags': [...]}} "
+            "Make sure 'visual_query' is a concise 2-3 word English keyword for searching Pexels (e.g. 'pouring concrete', 'bridge construction')."
+        )
+
+        response_text = await self._generate_content(prompt)
+        if not response_text:
+            return None
+        try:
+            text = re.search(r'\{.*\}', response_text, re.DOTALL).group()
             script_data = json.loads(text)
             
             # --- Monetization Safeguard: Similarity Check ---
-            is_too_similar = await self.check_similarity(script_data.get("narration", ""))
-            if is_too_similar and retry_count < 2:
-                logger.warning("Generated script is too similar to past content. Regenerating with variation...")
+            similarity_score = await self.calculate_similarity(script_data.get("narration", ""))
+            if similarity_score > settings.SIMILARITY_THRESHOLD and retry_count < 2:
+                logger.warning(f"Similarity score {similarity_score} exceeds threshold. Regenerating...")
                 return await self.generate_script(topic, retry_count + 1)
             
-            # Save to DB
-            collection = get_scripts_collection()
-            await collection.insert_one({
-                "topic": topic,
-                "script": script_data,
-                "language": "ta",
-                "narration_hash": hash(script_data.get("narration", ""))
-            })
-            
+            script_data["similarity_score"] = similarity_score
             return script_data
         except Exception as e:
-            logger.error(f"Failed to parse script JSON: {e}")
+            logger.error(f"Failed to parse script: {e}")
             return None
 
-    async def check_similarity(self, new_narration):
-        """Check if the script is too similar to previous ones (Monetization safety)."""
-        if not new_narration:
-            return False
-            
-        collection = get_scripts_collection()
-        # Fetch last 20 scripts
-        cursor = collection.find().sort("_id", -1).limit(20)
+    async def calculate_similarity(self, new_text):
+        """Check against last 50 scripts in PostgreSQL for repetition risk."""
+        if not new_text: return 0.0
         
-        new_words = set(re.findall(r'\w+', new_narration.lower()))
-        
-        async for doc in cursor:
-            old_narration = doc.get("script", {}).get("narration", "")
-            if not old_narration:
-                continue
-                
-            old_words = set(re.findall(r'\w+', old_narration.lower()))
+        async with Database.get_session() as session:
+            result = await session.execute(
+                select(ScriptAsset).order_by(desc(ScriptAsset.id)).limit(50)
+            )
+            past_scripts = result.scalars().all()
             
-            # Jaccard Similarity
-            intersection = new_words.intersection(old_words)
-            union = new_words.union(old_words)
-            similarity = len(intersection) / len(union) if union else 0
+            if not past_scripts: return 0.0
             
-            if similarity > 0.7: # 70% threshold
-                return True
+            new_words = set(re.findall(r'\w+', new_text.lower()))
+            max_similarity = 0.0
+            
+            for past in past_scripts:
+                old_words = set(re.findall(r'\w+', past.script_text.lower()))
+                intersection = new_words.intersection(old_words)
+                union = new_words.union(old_words)
+                sim = len(intersection) / len(union) if union else 0
+                max_similarity = max(max_similarity, sim)
                 
-        return False
+            return max_similarity
