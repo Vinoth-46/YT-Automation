@@ -5,6 +5,8 @@ from bot.handlers import start_command, status_command, generate_command, schedu
 from core.config import settings
 from core.database import Database, init_db
 from core.scheduler import SchedulerService
+import uvicorn
+from fastapi import FastAPI
 
 # Configure logging
 logging.basicConfig(
@@ -13,6 +15,11 @@ logging.basicConfig(
 )
 
 scheduler_service = SchedulerService()
+app = FastAPI()
+
+@app.get("/")
+async def health_check():
+    return {"status": "online", "bot": "running"}
 
 async def post_init(application):
     """Run after bot initialization."""
@@ -27,7 +34,7 @@ async def post_stop(application):
     await Database.close()
     logging.info("Bot post-stop completed")
 
-if __name__ == '__main__':
+async def run_bot():
     application = ApplicationBuilder().token(settings.TELEGRAM_BOT_TOKEN).post_init(post_init).post_stop(post_stop).build()
     
     # Handlers
@@ -37,5 +44,27 @@ if __name__ == '__main__':
     application.add_handler(CommandHandler('schedule', schedule_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
-    print("Bot is starting...")
-    application.run_polling()
+    logging.info("Bot is starting...")
+    async with application:
+        await application.initialize()
+        await application.start()
+        await application.updater.start_polling()
+        # Keep the bot running
+        while True:
+            await asyncio.sleep(1)
+
+async def main():
+    # Run both the health check server and the Telegram bot
+    port = int(os.environ.get("PORT", 8000))
+    config = uvicorn.Config(app, host="0.0.0.0", port=port)
+    server = uvicorn.Server(config)
+    
+    await asyncio.gather(
+        server.serve(),
+        run_bot()
+    )
+
+if __name__ == '__main__':
+    import os
+    asyncio.run(main())
+
