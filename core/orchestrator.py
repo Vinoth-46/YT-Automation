@@ -91,7 +91,7 @@ class Orchestrator:
             async with Database.get_session() as session:
                 audio_asset = AudioAsset(
                     job_id=job_id,
-                    model_name=self.audio_engine.model_name,
+                    model_name=getattr(self.audio_engine, "primary_model", "gemini-tts"),
                     audio_path=audio_path
                 )
                 session.add(audio_asset)
