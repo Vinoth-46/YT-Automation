@@ -80,7 +80,7 @@ class ScriptEngine:
             "1. TOPIC: A viral-style civil engineering mystery, hack, or fact.\n"
             "2. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
             "   CRITICAL: The CTA must say exactly this: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"
-            "3. VISUALS: Provide highly specific English 'visual_query' for technical construction actions.\n"
+            "3. VISUALS: Provide a SIMPLE, 1-3 word English 'visual_query' for Pexels search (e.g. 'pouring concrete', 'crane', 'bricks'). DO NOT write full sentences.\n"
             "4. METADATA (SEO): The YouTube description MUST include the full Business Name, Contact Number, "
             "Email, Website link, Instagram link, and the 4 key services listed above to reach a wider audience.\n\n"
             "OUTPUT FORMAT (JSON ONLY):\n"

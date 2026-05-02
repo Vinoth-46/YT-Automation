@@ -194,7 +194,11 @@ class VideoEngine:
                     data = await response.json()
                     
                     if data.get("videos"):
-                        for video in data["videos"]:
+                        import random
+                        videos_list = data["videos"]
+                        random.shuffle(videos_list)
+                        
+                        for video in videos_list:
                             vid_id = video.get("id")
                             if vid_id not in used_video_ids:
                                 used_video_ids.add(vid_id)

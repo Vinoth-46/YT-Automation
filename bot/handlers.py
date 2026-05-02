@@ -287,8 +287,8 @@ async def _run_and_notify(job_id, chat_id, context):
                         video=v,
                         caption=caption,
                         reply_markup=InlineKeyboardMarkup(keyboard),
-                        write_timeout=300,
-                        read_timeout=300
+                        write_timeout=900,
+                        read_timeout=900
                     )
                 await status_msg.delete()
         else:
