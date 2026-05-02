@@ -123,6 +123,9 @@ class VideoEngine:
             return False
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
         """Standardize clips, concatenate, and sync with audio using FFmpeg."""
+        job_id = os.path.basename(audio_path).split('_')[0]
+        temp_dir = os.path.dirname(audio_path) or settings.TEMP_DIR
+        
         processed_clips = []
         concat_file = None
         concat_output = None
