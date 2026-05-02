@@ -28,16 +28,23 @@ class ScriptEngine:
                 try:
                     # We use asyncio.to_thread because the new google-genai client's async support
                     # is currently best invoked via thread pool for simple generate_content calls
-                    response = await asyncio.to_thread(
-                        self.client.models.generate_content,
-                        model=model,
-                        contents=prompt,
-                        config=types.GenerateContentConfig(
-                            temperature=0.9,
-                        )
+                    # Wrap the thread in asyncio.wait_for so a silent SDK hang doesn't freeze the bot
+                    response = await asyncio.wait_for(
+                        asyncio.to_thread(
+                            self.client.models.generate_content,
+                            model=model,
+                            contents=prompt,
+                            config=types.GenerateContentConfig(
+                                temperature=0.9,
+                            )
+                        ),
+                        timeout=60
                     )
                     logger.info(f"Gemini API success with model {model} on attempt {attempt+1}")
                     return response.text
+                except asyncio.TimeoutError:
+                    logger.warning(f"Job timed out generating script with {model} on attempt {attempt+1}. Retrying...")
+                    continue
                 except Exception as e:
                     error_str = str(e).lower()
                     if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
