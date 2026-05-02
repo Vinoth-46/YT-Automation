@@ -42,11 +42,22 @@ class YouTubeEngine:
         if len(safe_title) > 95:
             safe_title = safe_title[:95] + "..."
 
+        # Sanitize and truncate tags to YouTube's 500 char total limit
+        safe_tags = []
+        current_tag_len = 0
+        if tags:
+            for tag in tags:
+                clean_tag = tag.replace("<", "").replace(">", "").replace("#", "").strip()
+                if clean_tag and len(clean_tag) < 50:
+                    if current_tag_len + len(clean_tag) + 1 <= 400:
+                        safe_tags.append(clean_tag)
+                        current_tag_len += len(clean_tag) + 1
+
         body = {
             'snippet': {
                 'title': safe_title,
                 'description': description,
-                'tags': tags or [],
+                'tags': safe_tags,
                 'categoryId': category_id
             },
             'status': {
