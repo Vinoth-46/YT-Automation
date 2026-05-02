@@ -82,7 +82,7 @@ class VideoEngine:
                     "ffmpeg", "-y", "-i", p,
                     "-threads", "1",  # Crucial for 512MB RAM limits
                     "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "28",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
                     "-max_muxing_queue_size", "1024",
                     "-an",  # Strip audio
                     processed_path
