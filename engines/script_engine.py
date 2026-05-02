@@ -151,6 +151,7 @@ class ScriptEngine:
             "1. Hook (5s) "
             "2. Body (50s) with technical civil engineering terms. "
             "3. CTA (5s). "
+            "4. Exactly 6 scenes total. "
             "Provide ONLY valid JSON exactly matching this structure: "
             "{'narration': 'Full Tamil script here', "
             "'scenes': [{'visual_query': 'specific english search term for stock video'}], "
