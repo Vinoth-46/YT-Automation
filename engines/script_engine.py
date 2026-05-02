@@ -155,7 +155,10 @@ class ScriptEngine:
             "{'narration': 'Full Tamil script here', "
             "'scenes': [{'visual_query': 'specific english search term for stock video'}], "
             "'metadata': {'title': '...', 'description': '...', 'tags': [...]}} "
-            "Make sure 'visual_query' is a concise 2-3 word English keyword for searching Pexels (e.g. 'pouring concrete', 'bridge construction')."
+            "Make sure 'visual_query' is a concise 2-3 word English keyword. "
+            "IMPORTANT: Every query MUST contain a technical construction word (e.g. 'construction site', 'civil engineering', 'bridge work') "
+            "to ensure Pexels doesn't return unrelated lifestyle footage (like people smoking or walking). "
+            "Avoid general words like 'woman', 'man', 'city', 'street' alone."
         )
 
         response_text = await self._generate_content(prompt)

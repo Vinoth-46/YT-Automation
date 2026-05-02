@@ -2,6 +2,7 @@ import os
 import logging
 import asyncio
 import aiohttp
+import httpx
 import traceback
 from core.config import settings
 
@@ -134,8 +135,9 @@ class VideoEngine:
             logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to standard 720x1280 format...")
             
             # Step 1: Pre-process each clip individually
-            watermark_path = "assets/Watermark/loading-logo.webp"
+            watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
             has_watermark = os.path.exists(watermark_path)
+            logger.info(f"Job {job_id}: Watermark found: {has_watermark} at {watermark_path}")
             
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
@@ -338,8 +340,11 @@ class VideoEngine:
         """Search Pexels API with technical fallbacks (async)."""
         query = query.strip().lower()
         
+        # Stricter technical filtering
+        search_query = f"{query} construction engineering"
+        
         fallbacks = [
-            query,
+            search_query,
             f"construction {query}",
             "civil engineering construction",
             "building site"
