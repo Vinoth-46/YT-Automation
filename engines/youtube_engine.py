@@ -37,9 +37,14 @@ class YouTubeEngine:
             logger.error("YouTube client not initialized. Authenticate first.")
             return None
 
+        # Sanitize and truncate title to YouTube's strict 100 character limit
+        safe_title = title.replace("<", "").replace(">", "")
+        if len(safe_title) > 95:
+            safe_title = safe_title[:95] + "..."
+
         body = {
             'snippet': {
-                'title': title,
+                'title': safe_title,
                 'description': description,
                 'tags': tags or [],
                 'categoryId': category_id
