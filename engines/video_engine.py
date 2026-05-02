@@ -76,17 +76,32 @@ class VideoEngine:
             logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to standard 720x1280 format...")
             
             # Step 1: Pre-process each clip individually
+            watermark_path = "assets/Watermark/loading-logo.webp"
+            has_watermark = os.path.exists(watermark_path)
+            
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
-                cmd = [
-                    "ffmpeg", "-y", "-i", p,
-                    "-threads", "1",  # Crucial for 512MB RAM limits
-                    "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                    "-max_muxing_queue_size", "1024",
-                    "-an",  # Strip audio
-                    processed_path
-                ]
+                if has_watermark:
+                    cmd = [
+                        "ffmpeg", "-y", "-i", p,
+                        "-i", watermark_path,
+                        "-threads", "1",
+                        "-filter_complex", "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p[bg];[1:v]scale=150:-1[wm];[bg][wm]overlay=W-w-20:20",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        "-max_muxing_queue_size", "1024",
+                        "-an",  # Strip audio
+                        processed_path
+                    ]
+                else:
+                    cmd = [
+                        "ffmpeg", "-y", "-i", p,
+                        "-threads", "1",
+                        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        "-max_muxing_queue_size", "1024",
+                        "-an",
+                        processed_path
+                    ]
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
@@ -166,12 +181,22 @@ class VideoEngine:
                 cta_mp4 = os.path.join(temp_dir, f"{job_id}_cta.mp4")
                 files_to_clean.append(cta_mp4)
                 
-                cta_cmd = [
-                    "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
-                    "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                    "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
-                    cta_mp4
-                ]
+                if has_watermark:
+                    cta_cmd = [
+                        "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
+                        "-i", watermark_path,
+                        "-t", str(cta_duration), 
+                        "-filter_complex", "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p[bg];[1:v]scale=150:-1[wm];[bg][wm]overlay=W-w-20:20",
+                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        cta_mp4
+                    ]
+                else:
+                    cta_cmd = [
+                        "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
+                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                        cta_mp4
+                    ]
                 await (await asyncio.create_subprocess_exec(*cta_cmd)).communicate()
                 
                 # 3. Write final concat list
