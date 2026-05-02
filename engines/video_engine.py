@@ -125,16 +125,75 @@ class VideoEngine:
                 logger.error(f"FFmpeg concat failed: {stderr.decode()[-500:]}")
                 return False
                 
+            import glob
+            import random
+            
+            # Get audio duration
+            probe_cmd = [
+                "ffprobe", "-v", "error", "-show_entries", "format=duration", 
+                "-of", "default=noprint_wrappers=1:nokey=1", audio_path
+            ]
+            process = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
+            stdout, _ = await asyncio.wait_for(process.communicate(), timeout=30)
+            audio_duration = float(stdout.decode().strip())
+            
+            cta_duration = 6.0
+            main_duration = max(0.0, audio_duration - cta_duration)
+            
+            # Check for CTA images
+            cta_images = glob.glob("assets/cta_images/*")
+            cta_image = random.choice(cta_images) if cta_images else None
+            
+            files_to_clean = processed_clips + [concat_file, concat_output]
+            final_concat_list = os.path.join(temp_dir, f"{job_id}_final_list.txt")
+            files_to_clean.append(final_concat_list)
+            
+            if cta_image and main_duration > 0:
+                logger.info(f"Job {job_id}: Appending CTA image {os.path.basename(cta_image)}")
+                
+                # 1. Trim looped Pexels video to main_duration
+                main_video_mp4 = os.path.join(temp_dir, f"{job_id}_main.mp4")
+                files_to_clean.append(main_video_mp4)
+                
+                main_cmd = [
+                    "ffmpeg", "-y", "-stream_loop", "-1", "-i", concat_output,
+                    "-t", str(main_duration), "-c:v", "copy",
+                    main_video_mp4
+                ]
+                await (await asyncio.create_subprocess_exec(*main_cmd)).communicate()
+                
+                # 2. Create 6-second video from CTA image
+                cta_mp4 = os.path.join(temp_dir, f"{job_id}_cta.mp4")
+                files_to_clean.append(cta_mp4)
+                
+                cta_cmd = [
+                    "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
+                    "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                    "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                    cta_mp4
+                ]
+                await (await asyncio.create_subprocess_exec(*cta_cmd)).communicate()
+                
+                # 3. Write final concat list
+                with open(final_concat_list, "w") as f:
+                    f.write(f"file '{os.path.basename(main_video_mp4)}'\n")
+                    f.write(f"file '{os.path.basename(cta_mp4)}'\n")
+            else:
+                # Fallback if no CTA images or audio too short
+                with open(final_concat_list, "w") as f:
+                    f.write(f"file '{os.path.basename(concat_output)}'\n")
+            
             # Step 3: Merge with audio
-            logger.info(f"FFmpeg: Merging video with audio...")
+            logger.info(f"FFmpeg: Merging final video with audio...")
             merge_cmd = [
                 "ffmpeg", "-y", "-threads", "1",
-                "-stream_loop", "-1",  # Loop video if shorter than audio
-                "-i", concat_output,
+                "-stream_loop", "-1" if not cta_image else "0", # Only loop if no CTA
+                "-f", "concat", "-safe", "0",
+                "-i", final_concat_list,
                 "-i", audio_path,
-                "-c:v", "copy",  # Copy video stream directly
+                "-c:v", "copy",
                 "-c:a", "aac", "-b:a", "128k",
-                "-shortest",  # Stop when audio ends
+                "-shortest",
                 "-movflags", "+faststart",
                 output_path
             ]
@@ -146,7 +205,6 @@ class VideoEngine:
             
             if process.returncode != 0:
                 logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
-                # FFmpeg sometimes exits non-zero but still produces valid file
                 if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
                     return True
                 return False
@@ -162,14 +220,13 @@ class VideoEngine:
             return False
         finally:
             # Clean up temp files
-            files_to_clean = processed_clips + [concat_file, concat_output]
-            for f in files_to_clean:
-                if f and os.path.exists(f):
-                    try:
-                        os.remove(f)
-                    except Exception:
-                        pass
-
+            if 'files_to_clean' in locals():
+                for f in files_to_clean:
+                    if f and os.path.exists(f):
+                        try:
+                            os.remove(f)
+                        except Exception:
+                            pass
     async def _search_pexels(self, session, query, used_video_ids):
         """Search Pexels API with technical fallbacks (async)."""
         query = query.strip().lower()
