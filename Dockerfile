@@ -8,6 +8,7 @@ RUN apt-get update && apt-get install -y \
     libxext6 \
     gcc \
     python3-dev \
+    fonts-liberation \
     && rm -rf /var/lib/apt/lists/*
 
 # Set the working directory in the container

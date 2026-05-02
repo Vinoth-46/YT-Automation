@@ -231,11 +231,16 @@ class VideoEngine:
                 files_to_clean.append(main_video_mp4)
                 
                 main_cmd = [
-                    "ffmpeg", "-y", "-stream_loop", "-1", "-i", concat_output,
+                    "ffmpeg", "-y", "-threads", "1",
+                    "-stream_loop", "-1", "-i", concat_output,
                     "-t", str(main_duration), "-c:v", "copy",
                     main_video_mp4
                 ]
-                await (await asyncio.create_subprocess_exec(*main_cmd)).communicate()
+                logger.info(f"FFmpeg: Trimming main video to {main_duration}s...")
+                proc_main = await asyncio.create_subprocess_exec(*main_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, stderr = await asyncio.wait_for(proc_main.communicate(), timeout=60)
+                if proc_main.returncode != 0:
+                    logger.error(f"FFmpeg main trim failed: {stderr.decode()[-300:]}")
                 
                 # 2. Create 6-second video from CTA image
                 cta_mp4 = os.path.join(temp_dir, f"{job_id}_cta.mp4")
@@ -243,7 +248,8 @@ class VideoEngine:
                 
                 if has_watermark:
                     cta_cmd = [
-                        "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
+                        "ffmpeg", "-y", "-threads", "1",
+                        "-loop", "1", "-i", cta_image,
                         "-i", watermark_path,
                         "-t", str(cta_duration), 
                         "-filter_complex", "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p[bg];[1:v]scale=150:-1[wm];[bg][wm]overlay=W-w-20:20",
@@ -252,12 +258,17 @@ class VideoEngine:
                     ]
                 else:
                     cta_cmd = [
-                        "ffmpeg", "-y", "-loop", "1", "-i", cta_image,
+                        "ffmpeg", "-y", "-threads", "1",
+                        "-loop", "1", "-i", cta_image,
                         "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
                         "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
                         cta_mp4
                     ]
-                await (await asyncio.create_subprocess_exec(*cta_cmd)).communicate()
+                logger.info(f"FFmpeg: Generating CTA clip from {os.path.basename(cta_image)}...")
+                proc_cta = await asyncio.create_subprocess_exec(*cta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, stderr = await asyncio.wait_for(proc_cta.communicate(), timeout=60)
+                if proc_cta.returncode != 0:
+                    logger.error(f"FFmpeg CTA generation failed: {stderr.decode()[-300:]}")
                 
                 # 3. Write final concat list
                 with open(final_concat_list, "w") as f:
@@ -285,9 +296,8 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Arial,Fontsize=28,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
+                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Liberation Sans,Fontsize=24,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
                     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "35",
-                    "-threads", "1",
                     "-rc-lookahead", "0",
                     "-bf", "0",
                     "-tune", "fastdecode",
@@ -312,10 +322,11 @@ class VideoEngine:
                     output_path
                 ]
             
+            logger.info(f"FFmpeg: Final merge starting...")
             process = await asyncio.create_subprocess_exec(
                 *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
             
             if process.returncode != 0:
                 logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
