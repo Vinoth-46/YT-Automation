@@ -202,13 +202,16 @@ class VideoEngine:
                                 # Find a reasonable quality file (not too large for free tier)
                                 for vf in video_files:
                                     width = vf.get("width", 0)
-                                    if 480 <= width <= 1080:
+                                    height = vf.get("height", 0)
+                                    # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
+                                    if 480 <= width <= 720 or 480 <= height <= 1280:
                                         logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
                                         return vf["link"]
-                                # Fallback to first file
+                                # Fallback to smallest file to prevent OOM
                                 if video_files:
-                                    logger.info(f"Pexels match (fallback quality): '{q}' → video {vid_id}")
-                                    return video_files[0]["link"]
+                                    smallest = min(video_files, key=lambda x: x.get("width", 9999))
+                                    logger.info(f"Pexels match (fallback smallest): '{q}' → video {vid_id} ({smallest.get('width')}p)")
+                                    return smallest["link"]
             except asyncio.TimeoutError:
                 logger.warning(f"Pexels timeout for query '{q}'")
             except Exception as e:
