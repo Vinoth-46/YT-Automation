@@ -30,7 +30,9 @@ ENV/
 # Data & Assets
 outputs/
 temp/
-assets/
+assets/*
+!assets/Watermark/
+!assets/cta_images/
 *.log
 *.sqlite
 credentials/
