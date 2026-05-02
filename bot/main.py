@@ -109,11 +109,12 @@ async def run_bot():
     await asyncio.sleep(3)
     
     application = (
-        ApplicationBuilder()
+        Application.builder()
         .token(settings.TELEGRAM_BOT_TOKEN)
-        .connect_timeout(30.0)
-        .read_timeout(30.0)
-        .write_timeout(30.0)
+        .pool_timeout(900.0)
+        .connect_timeout(900.0)
+        .read_timeout(900.0)
+        .write_timeout(900.0)
         .post_stop(post_stop)
         .build()
     )

@@ -227,7 +227,7 @@ class VideoEngine:
     async def _download_file(self, session, url, path):
         """Download asset locally (async with progress)."""
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=60)) as response:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=120)) as response:
                 if response.status != 200:
                     logger.error(f"Download failed: HTTP {response.status} for {url[:80]}")
                     return False
