@@ -146,7 +146,7 @@ class VideoEngine:
                         "ffmpeg", "-y", "-i", p,
                         "-i", watermark_path,
                         "-threads", "1",
-                        "-filter_complex", "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p[bg];[1:v]scale=150:-1[wm];[bg][wm]overlay=W-w-20:20",
+                        "-filter_complex", "[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,fps=30,format=yuv420p[bg];[1:v]scale=100:-1[wm];[bg][wm]overlay=W-w-15:15",
                         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
                         "-max_muxing_queue_size", "1024",
                         "-an",  # Strip audio
@@ -156,7 +156,7 @@ class VideoEngine:
                     cmd = [
                         "ffmpeg", "-y", "-i", p,
                         "-threads", "1",
-                        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                        "-vf", "scale=480:854:force_original_aspect_ratio=increase,crop=480:854,fps=30,format=yuv420p",
                         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
                         "-max_muxing_queue_size", "1024",
                         "-an",
@@ -252,7 +252,7 @@ class VideoEngine:
                         "-loop", "1", "-i", cta_image,
                         "-i", watermark_path,
                         "-t", str(cta_duration), 
-                        "-filter_complex", "[0:v]scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p[bg];[1:v]scale=150:-1[wm];[bg][wm]overlay=W-w-20:20",
+                        "-filter_complex", "[0:v]scale=480:854:force_original_aspect_ratio=increase,crop=480:854,fps=30,format=yuv420p[bg];[1:v]scale=100:-1[wm];[bg][wm]overlay=W-w-15:15",
                         "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
                         cta_mp4
                     ]
@@ -261,7 +261,7 @@ class VideoEngine:
                         "ffmpeg", "-y", "-threads", "1",
                         "-loop", "1", "-i", cta_image,
                         "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-vf", "scale=720:1280:force_original_aspect_ratio=increase,crop=720:1280,fps=30,format=yuv420p",
+                        "-vf", "scale=480:854:force_original_aspect_ratio=increase,crop=480:854,fps=30,format=yuv420p",
                         cta_mp4
                     ]
                 logger.info(f"FFmpeg: Generating CTA clip from {os.path.basename(cta_image)}...")
@@ -296,7 +296,7 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Liberation Sans,Fontsize=24,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
+                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Liberation Sans,Fontsize=18,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,MarginV=80,Alignment=2'",
                     "-c:v", "libx264", "-preset", "ultrafast", "-crf", "35",
                     "-rc-lookahead", "0",
                     "-bf", "0",
