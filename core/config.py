@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     GEMINI_API_KEY: str
     TELEGRAM_BOT_TOKEN: str
     TELEGRAM_CHAT_ID: int
+    GROQ_API_KEY: str = ""
     HF_TOKEN: str = ""
 
     # PostgreSQL Config

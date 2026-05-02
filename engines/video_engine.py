@@ -65,7 +65,62 @@ class VideoEngine:
                     logger.warning(f"Job {job_id}: Scene {i+1} — no Pexels results for '{query}'")
         
         return assets
-
+        
+    async def _generate_srt(self, audio_path, srt_path):
+        """Use Groq Whisper API to generate an SRT file with 1-word fast subtitles."""
+        groq_api_key = settings.GROQ_API_KEY
+        if not groq_api_key:
+            logger.warning("GROQ_API_KEY not found. Skipping dynamic subtitles.")
+            return False
+            
+        try:
+            url = "https://api.groq.com/openai/v1/audio/transcriptions"
+            headers = {"Authorization": f"Bearer {groq_api_key}"}
+            
+            with open(audio_path, "rb") as f:
+                files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
+                data = {
+                    "model": "whisper-large-v3",
+                    "response_format": "verbose_json",
+                    "timestamp_granularities[]": "word"
+                }
+                
+                async with httpx.AsyncClient() as client:
+                    resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
+                    
+            if resp.status_code != 200:
+                logger.error(f"Groq API error: {resp.text}")
+                return False
+                
+            result = resp.json()
+            words = result.get("words", [])
+            
+            if not words:
+                logger.warning("Groq API returned no words.")
+                return False
+                
+            # Convert to SRT
+            def format_time(seconds):
+                ms = int((seconds % 1) * 1000)
+                m, s = divmod(int(seconds), 60)
+                h, m = divmod(m, 60)
+                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                
+            with open(srt_path, "w", encoding="utf-8") as f:
+                for i, word_data in enumerate(words):
+                    start = format_time(word_data["start"])
+                    end = format_time(word_data["end"])
+                    word = word_data["word"].strip()
+                    f.write(f"{i+1}\n{start} --> {end}\n{word}\n\n")
+                    
+            logger.info(f"Generated SRT with {len(words)} words.")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to generate SRT: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return False
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
         """Standardize clips, concatenate, and sync with audio using FFmpeg."""
         processed_clips = []
@@ -209,19 +264,43 @@ class VideoEngine:
                     f.write(f"file '{os.path.basename(concat_output)}'\n")
             
             # Step 3: Merge with audio
-            logger.info(f"FFmpeg: Merging final video with audio...")
-            merge_cmd = [
-                "ffmpeg", "-y", "-threads", "1",
-                "-stream_loop", "-1" if not cta_image else "0", # Only loop if no CTA
-                "-f", "concat", "-safe", "0",
-                "-i", final_concat_list,
-                "-i", audio_path,
-                "-c:v", "copy",
-                "-c:a", "aac", "-b:a", "128k",
-                "-shortest",
-                "-movflags", "+faststart",
-                output_path
-            ]
+            logger.info(f"FFmpeg: Merging final video with audio and subtitles...")
+            srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
+            has_srt = await self._generate_srt(audio_path, srt_path)
+            if has_srt:
+                files_to_clean.append(srt_path)
+                
+            safe_srt_path = srt_path.replace("\\", "/") # FFmpeg filter path safety
+            
+            if has_srt:
+                # Re-encode final video to burn subtitles
+                merge_cmd = [
+                    "ffmpeg", "-y", "-threads", "1",
+                    "-stream_loop", "-1" if not cta_image else "0",
+                    "-f", "concat", "-safe", "0",
+                    "-i", final_concat_list,
+                    "-i", audio_path,
+                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Arial,Fontsize=28,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,Alignment=2'",
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-shortest",
+                    "-movflags", "+faststart",
+                    output_path
+                ]
+            else:
+                # Standard fast copy if no subtitles
+                merge_cmd = [
+                    "ffmpeg", "-y", "-threads", "1",
+                    "-stream_loop", "-1" if not cta_image else "0",
+                    "-f", "concat", "-safe", "0",
+                    "-i", final_concat_list,
+                    "-i", audio_path,
+                    "-c:v", "copy",
+                    "-c:a", "aac", "-b:a", "128k",
+                    "-shortest",
+                    "-movflags", "+faststart",
+                    output_path
+                ]
             
             process = await asyncio.create_subprocess_exec(
                 *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
