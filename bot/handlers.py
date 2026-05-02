@@ -170,14 +170,14 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if query.data.startswith("approve_"):
             job_id = int(query.data.split("_")[1])
-            await query.edit_message_text("🚀 Approving and starting YouTube upload...")
+            await query.edit_message_caption("🚀 Approving and starting YouTube upload...")
             
             context.application.create_task(
                 _run_upload_and_notify(job_id, query.message.chat_id, context)
             )
         elif query.data.startswith("regen_"):
             job_id = int(query.data.split("_")[1])
-            await query.edit_message_text("🔄 Regenerating video...")
+            await query.edit_message_caption("🔄 Regenerating video...")
             
             from core.orchestrator import Orchestrator
             orchestrator = Orchestrator()
@@ -186,7 +186,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
     except Exception as e:
         logger.error(f"Error in button_callback: {e}")
-        await query.edit_message_text(f"❌ Error: {str(e)}")
+        try:
+            await query.edit_message_caption(f"❌ Error: {str(e)}")
+        except:
+            pass
 
 
 async def _run_upload_and_notify(job_id, chat_id, context):
