@@ -132,7 +132,7 @@ class VideoEngine:
         
         # === Kaggle Quality Settings (31GB RAM available) ===
         VID_W, VID_H = 1080, 1920
-        CRF = "23"
+        CRF = "28"
         PRESET = "medium"
         THREADS = "2"
         WM_SCALE = 150
