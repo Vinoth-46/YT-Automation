@@ -123,16 +123,26 @@ class VideoEngine:
             logger.error(traceback.format_exc())
             return False
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
-        """Standardize clips, concatenate, and sync with audio using FFmpeg."""
+        """Standardize clips, concatenate, and sync with audio using FFmpeg.
+        
+        Kaggle-optimized: 1080x1920, CRF 23, 2 threads, Tamil font subtitles.
+        """
         job_id = os.path.basename(audio_path).split('_')[0]
         temp_dir = os.path.dirname(audio_path) or settings.TEMP_DIR
+        
+        # === Kaggle Quality Settings (31GB RAM available) ===
+        VID_W, VID_H = 1080, 1920
+        CRF = "23"
+        PRESET = "medium"
+        THREADS = "2"
+        WM_SCALE = 150
         
         processed_clips = []
         concat_file = None
         concat_output = None
         
         try:
-            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to standard 720x1280 format...")
+            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
             
             # Step 1: Pre-process each clip individually
             watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
@@ -143,29 +153,29 @@ class VideoEngine:
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 if has_watermark:
                     cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-i", p,
+                        "ffmpeg", "-y", "-i", p,
                         "-i", watermark_path,
-                        "-threads", "1",
-                        "-filter_complex", "[0:v]scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p[bg];[1:v]scale=80:-1[wm];[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-max_muxing_queue_size", "1024",
+                        "-threads", THREADS,
+                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                        "-max_muxing_queue_size", "2048",
                         "-an",  # Strip audio
                         processed_path
                     ]
                 else:
                     cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-i", p,
-                        "-threads", "1",
-                        "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-max_muxing_queue_size", "1024",
+                        "ffmpeg", "-y", "-i", p,
+                        "-threads", THREADS,
+                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                        "-max_muxing_queue_size", "2048",
                         "-an",
                         processed_path
                     ]
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
                 
                 if process.returncode == 0 and os.path.exists(processed_path):
                     processed_clips.append(processed_path)
@@ -184,7 +194,7 @@ class VideoEngine:
             
             concat_output = output_path.replace(".mp4", "_concat.mp4")
             concat_cmd = [
-                "nice", "-n", "19", "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
                 "-c", "copy",  # Fast copy since they are already identical format
                 concat_output
@@ -231,7 +241,7 @@ class VideoEngine:
                 files_to_clean.append(main_video_mp4)
                 
                 main_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-stream_loop", "-1", "-i", concat_output,
                     "-t", str(main_duration), "-c:v", "copy",
                     main_video_mp4
@@ -248,20 +258,20 @@ class VideoEngine:
                 
                 if has_watermark:
                     cta_cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                        "ffmpeg", "-y", "-threads", THREADS,
                         "-loop", "1", "-i", cta_image,
                         "-i", watermark_path,
                         "-t", str(cta_duration), 
-                        "-filter_complex", "[0:v]scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p[bg];[1:v]scale=80:-1[wm];[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         cta_mp4
                     ]
                 else:
                     cta_cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                        "ffmpeg", "-y", "-threads", THREADS,
                         "-loop", "1", "-i", cta_image,
-                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p",
+                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p",
                         cta_mp4
                     ]
                 logger.info(f"FFmpeg: Generating CTA clip from {os.path.basename(cta_image)}...")
@@ -289,20 +299,17 @@ class VideoEngine:
             safe_srt_path = srt_path.replace("\\", "/") # FFmpeg filter path safety
             
             if has_srt:
-                # Re-encode final video to burn subtitles
+                # Re-encode final video to burn subtitles with Tamil font
                 merge_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Liberation Sans,Fontsize=14,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,MarginV=60,Alignment=2'",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "35",
-                    "-rc-lookahead", "0",
-                    "-bf", "0",
-                    "-tune", "fastdecode",
+                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Noto Sans Tamil,Fontsize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=80,Alignment=2,Bold=1'",
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
@@ -310,13 +317,13 @@ class VideoEngine:
             else:
                 # Standard fast copy if no subtitles
                 merge_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
                     "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
@@ -326,7 +333,7 @@ class VideoEngine:
             process = await asyncio.create_subprocess_exec(
                 *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
             
             if process.returncode != 0:
                 logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
@@ -393,7 +400,7 @@ class VideoEngine:
                                     width = vf.get("width", 0)
                                     height = vf.get("height", 0)
                                     # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
-                                    if 480 <= width <= 720 or 480 <= height <= 1280:
+                                    if 720 <= width <= 1920 or 720 <= height <= 1920:
                                         logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
                                         return vf["link"]
                                 # Fallback to smallest file to prevent OOM
