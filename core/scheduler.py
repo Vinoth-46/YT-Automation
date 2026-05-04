@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class SchedulerService:
     def __init__(self):
-        self.scheduler = AsyncIOScheduler()
+        self.scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
 
     def start(self):
         self.scheduler.start()

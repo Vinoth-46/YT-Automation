@@ -33,8 +33,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             result = await session.execute(select(User).where(User.telegram_id == user.id))
             db_user = result.scalar_one_or_none()
             if not db_user:
-                logger.info(f"Creating new user {user.id} in database...")
-                db_user = User(telegram_id=user.id, timezone="UTC")
+                db_user = User(telegram_id=user.id, timezone="Asia/Kolkata")
                 session.add(db_user)
                 await session.commit()
             logger.info(f"Database check completed for user {user.id}")
@@ -102,7 +101,7 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             session.add(new_schedule)
             await session.commit()
         
-        await update.message.reply_text(f"✅ Daily schedule set for {time_str} UTC.")
+        await update.message.reply_text(f"✅ Daily schedule set for {time_str} IST.")
     except Exception as e:
         logger.error(f"Error in schedule_command: {e}")
         logger.error(traceback.format_exc())
@@ -122,7 +121,7 @@ async def view_schedule_command(update: Update, context: ContextTypes.DEFAULT_TY
                 await update.message.reply_text("No active schedules found. Use /schedule HH:MM to add one.")
                 return
                 
-            text = "📅 Your Daily Schedules (UTC):\n"
+            text = "📅 Your Daily Schedules (IST):\n"
             for s in schedules:
                 text += f"• {s.publish_time}\n"
             await update.message.reply_text(text)
