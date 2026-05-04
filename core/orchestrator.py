@@ -181,7 +181,7 @@ class Orchestrator:
                 title=script.title,
                 description=script.description,
                 tags=script.hashtags,
-                privacy_status="private"
+                privacy_status="public"
             )
 
             if not video_id:

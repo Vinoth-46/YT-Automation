@@ -202,7 +202,7 @@ async def _run_upload_and_notify(job_id, chat_id, context):
         if video_id:
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ Video Uploaded Successfully!\n\nVideo ID: {video_id}\nURL: https://youtu.be/{video_id}\n\nStatus: Private (Check YouTube Studio to publish)"
+                text=f"✅ Video Uploaded Successfully!\n\nVideo ID: {video_id}\nURL: https://youtu.be/{video_id}\n\nStatus: Public (Live on YouTube)"
             )
         else:
             await context.bot.send_message(
