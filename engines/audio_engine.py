@@ -9,8 +9,8 @@ logger = logging.getLogger(__name__)
 
 class AudioEngine:
     def __init__(self):
-        self.primary_model = "gemini-2.0-flash-preview-tts"   # Correct model ID
-        self.fallback_model = "gemini-3.1-flash-tts-preview"
+        self.primary_model = "gemini-1.5-flash"
+        self.fallback_model = "gemini-1.5-flash-8b"
 
     async def generate_narration(self, script_data, job_id, mode="publish"):
         """Generate narration using Gemini TTS with fallbacks."""

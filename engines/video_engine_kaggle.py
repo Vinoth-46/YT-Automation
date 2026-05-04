@@ -1,3 +1,13 @@
+"""
+Video Engine — Kaggle-optimized variant.
+
+Differences from the Render version:
+  - Higher resolution: 720x1280 (vs 360x640 on Render)
+  - More threads: 2 (vs 1 on Render)
+  - Better CRF: 26 (vs 32-35 on Render)
+  - Longer timeouts: 600s (vs 180-300s on Render)
+  - No OOM worries with 13GB RAM
+"""
 import os
 import logging
 import asyncio
@@ -8,6 +18,15 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# === Kaggle Quality Settings ===
+VIDEO_WIDTH = 720
+VIDEO_HEIGHT = 1280
+CRF_QUALITY = 26       # Much better quality (Render used 32-35)
+FFMPEG_THREADS = 2      # Kaggle has 4 cores, use 2
+PRESET = "medium"       # Better compression (Render used ultrafast)
+WATERMARK_SCALE = 120   # Larger watermark (Render used 80)
+
+
 class VideoEngine:
     def __init__(self):
         self.pexels_api_key = settings.PEXELS_API_KEY
@@ -17,7 +36,7 @@ class VideoEngine:
         output_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.mp4")
         scenes = script_data.get("scenes", [])
         
-        logger.info(f"Job {job_id}: Starting video assembly with {len(scenes)} scenes")
+        logger.info(f"Job {job_id}: Starting video assembly with {len(scenes)} scenes (Kaggle mode)")
         
         if not scenes:
             logger.error(f"Job {job_id}: No scenes found in script_data")
@@ -122,8 +141,12 @@ class VideoEngine:
             import traceback
             logger.error(traceback.format_exc())
             return False
+
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
-        """Standardize clips, concatenate, and sync with audio using FFmpeg."""
+        """Standardize clips, concatenate, and sync with audio using FFmpeg.
+        
+        Kaggle version: Higher resolution, better quality, more threads.
+        """
         job_id = os.path.basename(audio_path).split('_')[0]
         temp_dir = os.path.dirname(audio_path) or settings.TEMP_DIR
         
@@ -132,7 +155,7 @@ class VideoEngine:
         concat_output = None
         
         try:
-            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to standard 720x1280 format...")
+            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VIDEO_WIDTH}x{VIDEO_HEIGHT}...")
             
             # Step 1: Pre-process each clip individually
             watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
@@ -143,29 +166,36 @@ class VideoEngine:
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 if has_watermark:
                     cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-i", p,
+                        "ffmpeg", "-y", "-i", p,
                         "-i", watermark_path,
-                        "-threads", "1",
-                        "-filter_complex", "[0:v]scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p[bg];[1:v]scale=80:-1[wm];[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-max_muxing_queue_size", "1024",
-                        "-an",  # Strip audio
+                        "-threads", str(FFMPEG_THREADS),
+                        "-filter_complex",
+                        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p[bg];"
+                        f"[1:v]scale={WATERMARK_SCALE}:-1[wm];"
+                        f"[bg][wm]overlay=W-w-10:10",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-max_muxing_queue_size", "2048",
+                        "-an",
                         processed_path
                     ]
                 else:
                     cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-i", p,
-                        "-threads", "1",
-                        "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-max_muxing_queue_size", "1024",
+                        "ffmpeg", "-y", "-i", p,
+                        "-threads", str(FFMPEG_THREADS),
+                        "-vf", (
+                            f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p"
+                        ),
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-max_muxing_queue_size", "2048",
                         "-an",
                         processed_path
                     ]
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                _, stderr = await asyncio.wait_for(process.communicate(), timeout=180)
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
                 
                 if process.returncode == 0 and os.path.exists(processed_path):
                     processed_clips.append(processed_path)
@@ -184,9 +214,9 @@ class VideoEngine:
             
             concat_output = output_path.replace(".mp4", "_concat.mp4")
             concat_cmd = [
-                "nice", "-n", "19", "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+                "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
-                "-c", "copy",  # Fast copy since they are already identical format
+                "-c", "copy",
                 concat_output
             ]
             
@@ -226,97 +256,104 @@ class VideoEngine:
             if cta_image and main_duration > 0:
                 logger.info(f"Job {job_id}: Appending CTA image {os.path.basename(cta_image)}")
                 
-                # 1. Trim looped Pexels video to main_duration
                 main_video_mp4 = os.path.join(temp_dir, f"{job_id}_main.mp4")
                 files_to_clean.append(main_video_mp4)
                 
                 main_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                     "-stream_loop", "-1", "-i", concat_output,
                     "-t", str(main_duration), "-c:v", "copy",
                     main_video_mp4
                 ]
                 logger.info(f"FFmpeg: Trimming main video to {main_duration}s...")
-                proc_main = await asyncio.create_subprocess_exec(*main_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                _, stderr = await asyncio.wait_for(proc_main.communicate(), timeout=60)
+                proc_main = await asyncio.create_subprocess_exec(
+                    *main_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await asyncio.wait_for(proc_main.communicate(), timeout=120)
                 if proc_main.returncode != 0:
                     logger.error(f"FFmpeg main trim failed: {stderr.decode()[-300:]}")
                 
-                # 2. Create 6-second video from CTA image
                 cta_mp4 = os.path.join(temp_dir, f"{job_id}_cta.mp4")
                 files_to_clean.append(cta_mp4)
                 
                 if has_watermark:
                     cta_cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                        "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                         "-loop", "1", "-i", cta_image,
                         "-i", watermark_path,
-                        "-t", str(cta_duration), 
-                        "-filter_complex", "[0:v]scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p[bg];[1:v]scale=80:-1[wm];[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
+                        "-t", str(cta_duration),
+                        "-filter_complex",
+                        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p[bg];"
+                        f"[1:v]scale={WATERMARK_SCALE}:-1[wm];"
+                        f"[bg][wm]overlay=W-w-10:10",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
                         cta_mp4
                     ]
                 else:
                     cta_cmd = [
-                        "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                        "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                         "-loop", "1", "-i", cta_image,
-                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", "ultrafast", "-crf", "32",
-                        "-vf", "scale=360:640:force_original_aspect_ratio=increase,crop=360:640,fps=30,format=yuv420p",
+                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-vf", (
+                            f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
+                            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p"
+                        ),
                         cta_mp4
                     ]
                 logger.info(f"FFmpeg: Generating CTA clip from {os.path.basename(cta_image)}...")
-                proc_cta = await asyncio.create_subprocess_exec(*cta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-                _, stderr = await asyncio.wait_for(proc_cta.communicate(), timeout=60)
+                proc_cta = await asyncio.create_subprocess_exec(
+                    *cta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await asyncio.wait_for(proc_cta.communicate(), timeout=120)
                 if proc_cta.returncode != 0:
                     logger.error(f"FFmpeg CTA generation failed: {stderr.decode()[-300:]}")
                 
-                # 3. Write final concat list
                 with open(final_concat_list, "w") as f:
                     f.write(f"file '{os.path.basename(main_video_mp4)}'\n")
                     f.write(f"file '{os.path.basename(cta_mp4)}'\n")
             else:
-                # Fallback if no CTA images or audio too short
                 with open(final_concat_list, "w") as f:
                     f.write(f"file '{os.path.basename(concat_output)}'\n")
             
-            # Step 3: Merge with audio
+            # Step 3: Merge with audio + subtitles
             logger.info(f"FFmpeg: Merging final video with audio and subtitles...")
             srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
             has_srt = await self._generate_srt(audio_path, srt_path)
             if has_srt:
                 files_to_clean.append(srt_path)
                 
-            safe_srt_path = srt_path.replace("\\", "/") # FFmpeg filter path safety
+            safe_srt_path = srt_path.replace("\\", "/")
             
             if has_srt:
-                # Re-encode final video to burn subtitles
                 merge_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                     "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:force_style='Fontname=Liberation Sans,Fontsize=14,PrimaryColour=&H0000FFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,MarginV=60,Alignment=2'",
-                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "35",
-                    "-rc-lookahead", "0",
-                    "-bf", "0",
-                    "-tune", "fastdecode",
+                    "-vf", (
+                        f"subtitles={safe_srt_path}:force_style="
+                        f"'Fontname=Liberation Sans,Fontsize=18,PrimaryColour=&H0000FFFF,"
+                        f"OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,"
+                        f"MarginV=80,Alignment=2'"
+                    ),
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
                     "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:a", "aac", "-b:a", "192k",  # Better audio quality too
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
                 ]
             else:
-                # Standard fast copy if no subtitles
                 merge_cmd = [
-                    "nice", "-n", "19", "ffmpeg", "-y", "-threads", "1",
+                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                     "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
                     "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "128k",
+                    "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
@@ -326,7 +363,7 @@ class VideoEngine:
             process = await asyncio.create_subprocess_exec(
                 *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
             )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=300)
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
             
             if process.returncode != 0:
                 logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
@@ -352,11 +389,11 @@ class VideoEngine:
                             os.remove(f)
                         except Exception:
                             pass
+
     async def _search_pexels(self, session, query, used_video_ids):
         """Search Pexels API with technical fallbacks (async)."""
         query = query.strip().lower()
         
-        # Stricter technical filtering
         search_query = f"{query} construction engineering"
         
         fallbacks = [
@@ -388,18 +425,17 @@ class VideoEngine:
                             if vid_id not in used_video_ids:
                                 used_video_ids.add(vid_id)
                                 video_files = video.get("video_files", [])
-                                # Find a reasonable quality file (not too large for free tier)
+                                # On Kaggle we can afford HD quality
                                 for vf in video_files:
                                     width = vf.get("width", 0)
                                     height = vf.get("height", 0)
-                                    # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
-                                    if 480 <= width <= 720 or 480 <= height <= 1280:
+                                    if 720 <= width <= 1080 or 720 <= height <= 1920:
                                         logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
                                         return vf["link"]
-                                # Fallback to smallest file to prevent OOM
+                                # Fallback
                                 if video_files:
                                     smallest = min(video_files, key=lambda x: x.get("width", 9999))
-                                    logger.info(f"Pexels match (fallback smallest): '{q}' → video {vid_id} ({smallest.get('width')}p)")
+                                    logger.info(f"Pexels match (fallback): '{q}' → video {vid_id} ({smallest.get('width')}p)")
                                     return smallest["link"]
             except asyncio.TimeoutError:
                 logger.warning(f"Pexels timeout for query '{q}'")
