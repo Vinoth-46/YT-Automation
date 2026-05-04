@@ -131,6 +131,41 @@ async def view_schedule_command(update: Update, context: ContextTypes.DEFAULT_TY
         await update.message.reply_text(f"❌ Failed to load schedules: {str(e)}")
 
 
+async def clear_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Clear all active schedules."""
+    try:
+        from sqlalchemy import delete
+        Database = _get_db()
+        _, _, Schedule, User, _, _ = _get_models()
+        async with Database.get_session() as session:
+            # Get user
+            result = await session.execute(select(User).where(User.telegram_id == update.effective_user.id))
+            user = result.scalar_one_or_none()
+            
+            if not user:
+                await update.message.reply_text("❌ User not found.")
+                return
+                
+            # Delete schedules
+            await session.execute(delete(Schedule).where(Schedule.user_id == user.id))
+            await session.commit()
+            
+            # Also tell the scheduler service to reload if it's available
+            try:
+                scheduler = context.application.bot_data.get("scheduler")
+                if scheduler:
+                    # Clear all jobs in APScheduler
+                    scheduler.scheduler.remove_all_jobs()
+            except Exception:
+                pass
+                
+        await update.message.reply_text("🗑️ All active schedules have been revoked/cleared successfully.")
+    except Exception as e:
+        logger.error(f"Error in clear_schedule_command: {e}")
+        logger.error(traceback.format_exc())
+        await update.message.reply_text(f"❌ Failed to clear schedules: {str(e)}")
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check status of recent jobs."""
     try:

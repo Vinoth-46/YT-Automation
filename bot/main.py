@@ -6,7 +6,7 @@ import traceback
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 from bot.handlers import (
     start_command, status_command, generate_command, 
-    schedule_command, view_schedule_command, cancel_command, button_callback
+    schedule_command, view_schedule_command, clear_schedule_command, cancel_command, button_callback
 )
 from core.config import settings
 import uvicorn
@@ -39,6 +39,7 @@ async def setup_bot_commands(bot):
         BotCommand("status", "Check recent job status"),
         BotCommand("schedule", "Set daily posting time (UTC)"),
         BotCommand("view_schedule", "View active schedules"),
+        BotCommand("clearschedule", "Revoke/Clear all active schedules"),
         BotCommand("cancel", "Cancel current process")
     ]
     
@@ -126,6 +127,7 @@ async def run_bot():
     application.add_handler(CommandHandler('generate', generate_command))
     application.add_handler(CommandHandler('schedule', schedule_command))
     application.add_handler(CommandHandler('view_schedule', view_schedule_command))
+    application.add_handler(CommandHandler('clearschedule', clear_schedule_command))
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     
