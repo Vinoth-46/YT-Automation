@@ -32,7 +32,7 @@ class VideoEngine:
         logger.info(f"Job {job_id}: Gathered {len(scene_assets)} video assets, starting FFmpeg render")
 
         # 2. Final Render with FFmpeg
-        success = await self._render_ffmpeg(scene_assets, narration_path, output_path)
+        success = await self._render_ffmpeg(scene_assets, narration_path, output_path, script_data=script_data)
         
         if success and os.path.exists(output_path):
             file_size = os.path.getsize(output_path)
@@ -67,7 +67,7 @@ class VideoEngine:
         
         return assets
         
-    async def _generate_srt(self, audio_path, srt_path):
+    async def _generate_srt(self, audio_path, srt_path, script_data=None):
         """Use Groq Whisper API to generate an SRT file with 1-word fast subtitles."""
         groq_api_key = settings.GROQ_API_KEY
         if not groq_api_key:
@@ -85,6 +85,9 @@ class VideoEngine:
                     "response_format": "verbose_json",
                     "timestamp_granularities[]": "word"
                 }
+                
+                if script_data and script_data.get("narration"):
+                    data["prompt"] = script_data["narration"]
                 
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
@@ -122,7 +125,7 @@ class VideoEngine:
             import traceback
             logger.error(traceback.format_exc())
             return False
-    async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
+    async def _render_ffmpeg(self, scene_paths, audio_path, output_path, script_data=None):
         """Standardize clips, concatenate, and sync with audio using FFmpeg.
         
         Kaggle-optimized: 1080x1920, CRF 23, 2 threads, Tamil font subtitles.
@@ -302,7 +305,7 @@ class VideoEngine:
             # Step 3: Merge with audio
             logger.info(f"FFmpeg: Merging final video with audio and subtitles...")
             srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
-            has_srt = await self._generate_srt(audio_path, srt_path)
+            has_srt = await self._generate_srt(audio_path, srt_path, script_data=script_data)
             if has_srt:
                 files_to_clean.append(srt_path)
                 
@@ -316,7 +319,7 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=22,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=80,Alignment=2,Bold=1'",
+                    "-vf", f"subtitles={safe_srt_path}:fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=14,PrimaryColour=&H00FFFFFF,OutlineColour=&H80000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=120,MarginL=80,MarginR=80,WrapStyle=1,Alignment=2,Bold=1'",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
