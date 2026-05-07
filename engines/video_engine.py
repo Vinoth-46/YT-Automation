@@ -80,7 +80,7 @@ class VideoEngine:
             # Use float16 on GPU to save memory, int8 on CPU
             compute_type = "float16" if device == "cuda" else "int8"
             
-            model = WhisperModel("distil-small", device=device, compute_type=compute_type)
+            model = WhisperModel("small", device=device, compute_type=compute_type)
             
             initial_prompt = ""
             if script_data and script_data.get("narration"):

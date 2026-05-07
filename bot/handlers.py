@@ -331,11 +331,12 @@ async def _run_and_notify(job_id, chat_id, context):
                     return
 
                 score = job.script.similarity_score if job.script and job.script.similarity_score is not None else 0.0
+                originality = 1.0 - score
                 topic = job.script.topic if job.script else "Unknown"
                 caption = (
                     f"✅ Video Draft Ready!\n\n"
                     f"📌 Topic: {topic}\n"
-                    f"📊 Originality Score: {score:.2f}\n"
+                    f"📊 Originality Score: {originality:.2f}\n"
                     f"📦 File Size: {file_size // 1024}KB\n\n"
                     f"What would you like to do?"
                 )
