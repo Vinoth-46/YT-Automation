@@ -24,7 +24,10 @@ class Settings(BaseSettings):
     
     # YouTube Config
     YOUTUBE_CLIENT_SECRET_FILE: str = os.path.join("credentials", "client_secret.json")
-    YOUTUBE_SCOPES: list = ["https://www.googleapis.com/auth/youtube.upload"]
+    YOUTUBE_SCOPES: list = [
+        "https://www.googleapis.com/auth/youtube.upload",
+        "https://www.googleapis.com/auth/youtube.readonly"
+    ]
 
     # Paths
     BASE_DIR: str = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
