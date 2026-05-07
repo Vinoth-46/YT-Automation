@@ -327,6 +327,7 @@ class VideoEngine:
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
+                    "-t", "58",
                     "-movflags", "+faststart",
                     output_path
                 ]
@@ -341,6 +342,7 @@ class VideoEngine:
                     "-c:v", "copy",
                     "-c:a", "aac", "-b:a", "192k",
                     "-shortest",
+                    "-t", "58",
                     "-movflags", "+faststart",
                     output_path
                 ]
