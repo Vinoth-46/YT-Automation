@@ -22,7 +22,7 @@ class AudioEngine:
         output_filename = f"{job_id}_narration.wav"
         output_path = os.path.join(settings.OUTPUT_DIR, output_filename)
 
-        # Primary: Gemini 2.5 TTS
+        # Primary: Gemini 3.5 TTS
         try:
             logger.info(f"Job {job_id}: Attempting Gemini TTS (Primary: {self.primary_model})...")
             result = await asyncio.wait_for(
