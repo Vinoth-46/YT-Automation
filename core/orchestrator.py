@@ -50,9 +50,9 @@ class Orchestrator:
             await self._update_job_state(job_id, JobState.GENERATING_SCRIPT)
             await notify("📝 Stage 1/4: Generating AI Script & Visual Keywords...")
             
-            # Fetch past topics for exclusion
+            # Fetch past topics for exclusion (Checking last 50 for uniqueness)
             async with Database.get_session() as session:
-                res = await session.execute(select(ScriptAsset.topic).limit(20))
+                res = await session.execute(select(ScriptAsset.topic).order_by(ScriptAsset.id.desc()).limit(50))
                 existing_topics = res.scalars().all()
 
             # Mega-Prompt Call

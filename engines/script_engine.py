@@ -99,29 +99,31 @@ class ScriptEngine:
             "3. Building Plans & Bank Estimates, 4. Bank Loan Assistance & Finance"
         )
         
+        # Format history for prompt
+        history_text = "\n".join([f"- {t}" for t in (existing_topics or [])])
+        
         prompt = (
-            f"You are an expert Civil Engineering content creator for YouTube Shorts. "
-            "TASK: Generate a unique topic AND a full 60-second script in ONE go. "
-            f"EXCLUDE these previous topics: {existing_topics or 'None'}. "
-            "\n\nBRANDING REQUIREMENTS:\n"
-            f"You MUST promote this business in the script and metadata:\n{business_details}\n\n"
-            "1. TOPIC: A viral-style civil engineering mystery, hack, or fact.\n"
-            "2. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
-            "   CRITICAL: The CTA must say exactly this: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"
-            "3. VISUALS: Provide a SIMPLE, 1-3 word English 'visual_query' for Pexels search (e.g. 'pouring concrete', 'crane', 'bricks'). DO NOT write full sentences.\n"
-            "4. METADATA (SEO): The YouTube description MUST include the full Business Name, Contact Number, "
-            "Email, Website link, Instagram link, and the 4 key services listed above to reach a wider audience.\n\n"
-            "OUTPUT FORMAT (JSON ONLY):\n"
-            "{\n"
-            "  'topic': {'title_en': '...', 'title_ta': '...'},\n"
-            "  'script': {\n"
-            "    'narration': '...', \n"
-            "    'scenes': [\n"
-            "      {'visual_query': 'specific technical action'}\n"
-            "    ],\n"
-            "    'metadata': {'title': '...', 'description': '...', 'tags': [...]}\n"
-            "  }\n"
-            "}"
+            f"Role: Expert Civil Engineering Content Creator for YouTube Shorts.\n"
+            f"Goal: Generate a unique topic AND a full 60-second script.\n\n"
+            f"🔴 PREVIOUS TOPICS BLACKLIST (DO NOT REPEAT OR MIMIC THESE):\n"
+            f"{history_text or 'None'}\n\n"
+            f"BRANDING REQUIREMENTS (Kitchaa's Enterprises):\n"
+            f"{business_details}\n\n"
+            f"INSTRUCTIONS:\n"
+            f"1. TOPIC: Choose a FRESH, NEW engineering insight NOT in the blacklist above.\n"
+            f"2. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
+            f"   CTA: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"
+            f"3. VISUALS: 1-3 word English 'visual_query' only (e.g. 'crane lift', 'cement mix').\n"
+            f"4. METADATA: Description MUST include Business Name, Contact, Website, Instagram, and all 4 services.\n\n"
+            f"OUTPUT FORMAT (JSON ONLY):\n"
+            f"{{\n"
+            f"  'topic': {{'title_en': '...', 'title_ta': '...'}},\n"
+            f"  'script': {{\n"
+            f"    'narration': '...', \n"
+            f"    'scenes': [{{'visual_query': '...'}}],\n"
+            f"    'metadata': {{'title': '...', 'description': '...', 'tags': [...]}}\n"
+            f"  }}\n"
+            f"}}"
         )
 
         response_text = await self._generate_content(prompt)

@@ -85,7 +85,7 @@ class VideoEngine:
             # 2. Upload Audio File
             logger.info(f"Uploading audio for transcription: {os.path.basename(audio_path)}")
             with open(audio_path, 'rb') as f:
-                audio_file = client.files.upload(file=f)
+                audio_file = client.files.upload(file=f, config={'mime_type': 'audio/wav'})
             
             # Wait for processing
             while audio_file.state.name == "PROCESSING":
