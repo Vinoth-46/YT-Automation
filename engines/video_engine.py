@@ -68,63 +68,66 @@ class VideoEngine:
         return assets
         
     async def _generate_srt(self, audio_path, srt_path, script_data=None):
-        """Use Groq Whisper API to generate an SRT file with 1-word fast subtitles."""
-        groq_api_key = settings.GROQ_API_KEY
-        if not groq_api_key:
-            logger.warning("GROQ_API_KEY not found. Skipping dynamic subtitles.")
-            return False
-            
+        """Use faster-whisper locally on Kaggle GPU to generate an SRT file."""
         try:
-            url = "https://api.groq.com/openai/v1/audio/transcriptions"
-            headers = {"Authorization": f"Bearer {groq_api_key}"}
+            from faster_whisper import WhisperModel
+            import torch
             
-            with open(audio_path, "rb") as f:
-                files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
-                data = {
-                    "model": "whisper-large-v3",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word"
-                }
-                
-                if script_data and script_data.get("narration"):
-                    # Truncate to avoid Groq's byte limit (Tamil chars are 3 bytes each)
-                    truncated_prompt = script_data["narration"][:250]
-                    logger.info(f"Sending prompt to Groq (Length: {len(truncated_prompt)})")
-                    data["prompt"] = truncated_prompt
-                
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
-                    
-            if resp.status_code != 200:
-                logger.error(f"Groq API error: {resp.text}")
-                return False
-                
-            result = resp.json()
-            words = result.get("words", [])
+            logger.info("Initializing faster-whisper local model (large-v3)...")
             
-            if not words:
-                logger.warning("Groq API returned no words.")
-                return False
-                
+            # Auto-detect device (Kaggle has GPU)
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            # Use float16 on GPU to save memory, int8 on CPU
+            compute_type = "float16" if device == "cuda" else "int8"
+            
+            model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+            
+            initial_prompt = ""
+            if script_data and script_data.get("narration"):
+                # No 896-char limit here! We can use the full narration context.
+                initial_prompt = script_data["narration"]
+            
+            logger.info(f"Starting local transcription on {device}...")
+            
+            segments, info = model.transcribe(
+                audio_path,
+                beam_size=5,
+                language="ta",
+                initial_prompt=initial_prompt,
+                word_timestamps=True
+            )
+            
             # Convert to SRT
             def format_time(seconds):
                 ms = int((seconds % 1) * 1000)
                 m, s = divmod(int(seconds), 60)
                 h, m = divmod(m, 60)
                 return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+            
+            words_list = []
+            for segment in segments:
+                for word in segment.words:
+                    words_list.append(word)
+            
+            if not words_list:
+                logger.warning("Whisper returned no words.")
+                return False
                 
             with open(srt_path, "w", encoding="utf-8") as f:
-                for i, word_data in enumerate(words):
-                    start = format_time(word_data["start"])
-                    end = format_time(word_data["end"])
-                    word = word_data["word"].strip()
+                for i, word_data in enumerate(words_list):
+                    start = format_time(word_data.start)
+                    end = format_time(word_data.end)
+                    word = word_data.word.strip()
                     f.write(f"{i+1}\n{start} --> {end}\n{word}\n\n")
-                    
-            logger.info(f"Generated SRT with {len(words)} words.")
+            
+            logger.info(f"Generated SRT locally with {len(words_list)} words.")
             return True
             
+        except ImportError:
+            logger.error("faster-whisper not installed. Run '!pip install faster-whisper'")
+            return False
         except Exception as e:
-            logger.error(f"Failed to generate SRT: {e}")
+            logger.error(f"Local Whisper failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
