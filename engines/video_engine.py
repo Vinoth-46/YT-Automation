@@ -87,8 +87,8 @@ class VideoEngine:
                 }
                 
                 if script_data and script_data.get("narration"):
-                    # Truncate to avoid Groq's 896 character limit for prompts
-                    truncated_prompt = script_data["narration"][:800]
+                    # Truncate to avoid Groq's byte limit (Tamil chars are 3 bytes each)
+                    truncated_prompt = script_data["narration"][:250]
                     logger.info(f"Sending prompt to Groq (Length: {len(truncated_prompt)})")
                     data["prompt"] = truncated_prompt
                 
