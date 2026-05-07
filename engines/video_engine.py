@@ -73,14 +73,14 @@ class VideoEngine:
             from faster_whisper import WhisperModel
             import torch
             
-            logger.info("Initializing faster-whisper local model (large-v3)...")
+            logger.info("Initializing faster-whisper local model (distil-small)...")
             
             # Auto-detect device (Kaggle has GPU)
             device = "cuda" if torch.cuda.is_available() else "cpu"
             # Use float16 on GPU to save memory, int8 on CPU
             compute_type = "float16" if device == "cuda" else "int8"
             
-            model = WhisperModel("large-v3", device=device, compute_type=compute_type)
+            model = WhisperModel("distil-small", device=device, compute_type=compute_type)
             
             initial_prompt = ""
             if script_data and script_data.get("narration"):
