@@ -41,10 +41,12 @@ class ScriptEngine:
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # Using the experimental models from your specific quota list
         models_to_try = [
-            'models/gemini-flash-latest',   # Most stable legacy backup
-            'models/gemini-2.5-flash',      # High priority experimental
-            'models/gemini-2.0-flash',      # Fast experimental
-            'models/gemini-pro-latest'      # High quality stable
+            'models/gemini-flash-latest',   
+            'models/gemini-1.5-flash',      
+            'models/gemini-2.5-flash',      
+            'models/gemini-2.0-flash',      
+            'models/gemini-1.5-pro',        
+            'models/gemini-pro-latest'      
         ]
         
         for model in models_to_try:
@@ -78,9 +80,10 @@ class ScriptEngine:
                         else:
                             logger.warning(f"No more keys to rotate. Falling back to next model.")
                             break 
-                        
-                    wait_time = (2 ** attempt) * 2
-                    logger.warning(f"Gemini API error with {model} (attempt {attempt+1}): {e}. Retrying in {wait_time}s...")
+                    
+                    # Longer wait for 503/Server Busy
+                    wait_time = (2 ** attempt) * 5 # 5s, 10s, 20s
+                    logger.warning(f"Gemini API busy or error with {model}. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
 
         logger.error("All Gemini API models and keys failed.")
