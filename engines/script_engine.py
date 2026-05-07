@@ -17,8 +17,8 @@ class ScriptEngine:
         self.api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
         self.current_key_index = 0
         self.client = genai.Client(api_key=self.api_keys[0])
-        # Setting default model to your preferred TTS-enabled version
-        self.model_name = 'gemini-3.1-flash-tts-preview'
+        # Setting default model to a stable text version
+        self.model_name = 'gemini-1.5-flash'
 
     def _rotate_key(self):
         """Switch to the next available API key."""
@@ -32,14 +32,11 @@ class ScriptEngine:
 
     async def _generate_content(self, prompt, max_retries=3):
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
-        # --- Cool-down Delay for Free Tier ---
-        await asyncio.sleep(8)
-        
-        # Using your preferred models for script generation as requested
+        # Using stable text models for script generation
         models_to_try = [
-            'gemini-3.1-flash-tts-preview', 
-            'gemini-2.5-flash-preview-tts', 
-            'gemini-1.5-flash'
+            'gemini-1.5-flash',      # Primary: Fast and stable
+            'gemini-1.5-pro',        # Secondary: High intelligence
+            'gemini-2.0-flash-exp'   # Tertiary: Experimental speed
         ]
         
         for model in models_to_try:
