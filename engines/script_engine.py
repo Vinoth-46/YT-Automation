@@ -18,7 +18,7 @@ class ScriptEngine:
         self.current_key_index = 0
         self.client = genai.Client(api_key=self.api_keys[0])
         # Setting default model to a stable text version
-        self.model_name = 'gemini-1.5-flash'
+        self.model_name = 'models/gemini-1.5-flash'
 
     def _rotate_key(self):
         """Switch to the next available API key."""
@@ -32,11 +32,11 @@ class ScriptEngine:
 
     async def _generate_content(self, prompt, max_retries=3):
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
-        # Using stable text models for script generation
+        # Using full model resource names to avoid 404 errors in some environments
         models_to_try = [
-            'gemini-1.5-flash',      # Primary: Fast and stable
-            'gemini-1.5-pro',        # Secondary: High intelligence
-            'gemini-2.0-flash-exp'   # Tertiary: Experimental speed
+            'models/gemini-1.5-flash',      # Primary
+            'models/gemini-1.5-pro',        # Secondary
+            'models/gemini-2.0-flash-exp'   # Tertiary
         ]
         
         for model in models_to_try:
