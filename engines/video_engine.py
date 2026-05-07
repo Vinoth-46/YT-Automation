@@ -88,7 +88,9 @@ class VideoEngine:
                 
                 if script_data and script_data.get("narration"):
                     # Truncate to avoid Groq's 896 character limit for prompts
-                    data["prompt"] = script_data["narration"][:800]
+                    truncated_prompt = script_data["narration"][:800]
+                    logger.info(f"Sending prompt to Groq (Length: {len(truncated_prompt)})")
+                    data["prompt"] = truncated_prompt
                 
                 async with httpx.AsyncClient() as client:
                     resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)

@@ -30,6 +30,10 @@ class YouTubeEngine:
                 logger.info("YouTube OAuth token refreshed successfully")
             except Exception as e:
                 logger.error(f"Failed to refresh YouTube token: {e}")
+                if "invalid_grant" in str(e).lower():
+                    logger.warning("Token is invalid/revoked. Clearing credentials to force re-authentication.")
+                    self.credentials = None
+                    self.youtube = None
 
     def upload_video(self, file_path, title, description, tags=None, category_id="27", privacy_status="private"):
         """Upload video to YouTube."""
