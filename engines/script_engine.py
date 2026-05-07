@@ -41,11 +41,10 @@ class ScriptEngine:
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # Using the experimental models from your specific quota list
         models_to_try = [
-            'models/gemini-2.0-flash',      # Very stable fallback
-            'models/gemini-2.5-flash',      # High priority
-            'models/gemini-3.1-flash',      # Newest
-            'models/gemini-1.5-flash',      # Standard
-            'gemini-1.5-flash'              # Final legacy attempt
+            'models/gemini-flash-latest',   # Most stable legacy backup
+            'models/gemini-2.5-flash',      # High priority experimental
+            'models/gemini-2.0-flash',      # Fast experimental
+            'models/gemini-pro-latest'      # High quality stable
         ]
         
         for model in models_to_try:
@@ -138,7 +137,8 @@ class ScriptEngine:
             similarity_score = await self.calculate_similarity(data['script'].get("narration", ""))
             data['script']["similarity_score"] = similarity_score
             
-            if similarity_score > settings.SIMILARITY_THRESHOLD:
+            threshold = settings.SIMILARITY_THRESHOLD or 0.7
+            if similarity_score and similarity_score > threshold:
                 logger.warning(f"Similarity {similarity_score} high. Retrying Mega-Prompt...")
                 return await self.generate_full_content(existing_topics)
                 
@@ -232,4 +232,32 @@ class ScriptEngine:
                 sim = len(intersection) / len(union) if union else 0
                 max_similarity = max(max_similarity, sim)
                 
-            return max_similarity
+if __name__ == "__main__":
+    # Local Test Script
+    import asyncio
+    from dotenv import load_dotenv
+    load_dotenv() # Load your .env file
+    
+    async def test():
+        logging.basicConfig(level=logging.INFO)
+        print("Starting Gemini Script Generation Test...")
+        
+        # Connect to DB for similarity check
+        Database.connect()
+        
+        engine = ScriptEngine()
+        
+        try:
+            result = await engine.generate_full_content()
+            if result:
+                print("\nSUCCESS! Generated Content:")
+                print(f"Topic: {result['topic']['title_en']}")
+                print(f"Script Snippet: {result['script']['narration'][:100]}...")
+            else:
+                print("\nFAILED: Engine returned None")
+        except Exception as e:
+            print(f"\nCRITICAL ERROR: {e}")
+        finally:
+            await Database.close()
+
+    asyncio.run(test())
