@@ -138,7 +138,7 @@ class Orchestrator:
                     from sqlalchemy.orm import selectinload
                     from core.models import User, Schedule
                     
-                    # Fetch job details
+                    # Fetch job with user details
                     res = await session.execute(
                         select(Job).options(
                             selectinload(Job.schedule).selectinload(Schedule.user)
@@ -146,19 +146,7 @@ class Orchestrator:
                     )
                     job = res.scalar_one_or_none()
                     
-                    is_auto = False
-                    if job:
-                        if job.schedule:
-                            # Use preference from the linked schedule's user
-                            is_auto = job.schedule.user.approval_mode == "auto"
-                        else:
-                            # For manual jobs, fetch the primary user's preference
-                            user_res = await session.execute(select(User).limit(1))
-                            primary_user = user_res.scalar_one_or_none()
-                            if primary_user:
-                                is_auto = primary_user.approval_mode == "auto"
-                    
-                    if is_auto:
+                    if job and job.schedule and job.schedule.user.approval_mode == "auto":
                         await notify("🚀 Auto-Approval detected! Starting YouTube upload...")
                         await self.publish_video(job_id)
                         await notify("✅ Video automatically published to YouTube!")

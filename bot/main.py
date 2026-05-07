@@ -79,20 +79,6 @@ async def init_services(application):
         logger.error(f"=== SCHEDULER FAILED (non-fatal): {e} ===")
         logger.error(traceback.format_exc())
 
-    # Auto-trigger if requested (Kaggle Startup Mode)
-    if os.environ.get("RUN_ON_STARTUP") == "true":
-        try:
-            logger.info("🚀 Startup trigger detected (RUN_ON_STARTUP=true)")
-            from core.orchestrator import Orchestrator
-            orchestrator = Orchestrator()
-            job_id = await orchestrator.create_job()
-            
-            # Start pipeline in the background
-            application.create_task(orchestrator.run_pipeline(job_id))
-            logger.info(f"✅ Pipeline started on startup for Job {job_id}")
-        except Exception as e:
-            logger.error(f"❌ Startup trigger failed: {e}")
-
 async def post_stop(application):
     """Run before bot shutdown."""
     try:
