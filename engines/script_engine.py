@@ -16,17 +16,23 @@ class ScriptEngine:
         # Support multiple keys separated by comma
         self.api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
         self.current_key_index = 0
-        self.client = genai.Client(api_key=self.api_keys[0])
+        self.client = genai.Client(
+            api_key=self.api_keys[0],
+            http_options={'api_version': 'v1'}
+        )
         # Setting default model to a stable text version
         self.model_name = 'gemini-1.5-flash'
-        logger.info(f"Initialized ScriptEngine with {len(self.api_keys)} keys. Primary model: {self.model_name}")
+        logger.info(f"Initialized ScriptEngine with {len(self.api_keys)} keys. Primary model: {self.model_name} (API v1)")
 
     def _rotate_key(self):
         """Switch to the next available API key."""
         if len(self.api_keys) > 1:
             self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
             new_key = self.api_keys[self.current_key_index]
-            self.client = genai.Client(api_key=new_key)
+            self.client = genai.Client(
+                api_key=new_key,
+                http_options={'api_version': 'v1'}
+            )
             logger.info(f"🔄 Rotated to Gemini API Key #{self.current_key_index + 1}")
             return True
         return False
