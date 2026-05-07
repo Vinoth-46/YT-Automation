@@ -100,16 +100,19 @@ async def run_bot():
     global _application
     
     # Clear any stale getUpdates session
-    logger.info("Clearing stale Telegram sessions...")
+    logger.info("🧹 Clearing stale Telegram sessions...")
     try:
         temp_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
         async with temp_bot:
             await temp_bot.delete_webhook(drop_pending_updates=True)
-        logger.info("=== STALE SESSIONS CLEARED ===")
+            me = await temp_bot.get_me()
+            logger.info(f"✅ Bot Identity: @{me.username} ({me.first_name})")
+        logger.info("=== STALE SESSIONS CLEARED. WAITING FOR RELEASE... ===")
     except Exception as e:
-        pass
+        logger.warning(f"⚠️ Session clear warning: {e}")
     
-    await asyncio.sleep(3)
+    # Wait longer to allow Telegram to release the session from other instances
+    await asyncio.sleep(5)
     
     application = (
         ApplicationBuilder()
