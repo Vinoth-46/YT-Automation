@@ -41,10 +41,11 @@ class ScriptEngine:
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # Using the experimental models from your specific quota list
         models_to_try = [
-            'gemini-3.1-flash',      # From your list
-            'gemini-3.1-pro',        # From your list
-            'gemini-2.5-flash',      # From your list
-            'gemini-1.5-flash'       # Legacy backup
+            'models/gemini-2.0-flash',      # Very stable fallback
+            'models/gemini-2.5-flash',      # High priority
+            'models/gemini-3.1-flash',      # Newest
+            'models/gemini-1.5-flash',      # Standard
+            'gemini-1.5-flash'              # Final legacy attempt
         ]
         
         for model in models_to_try:
@@ -101,17 +102,15 @@ class ScriptEngine:
         
         prompt = (
             f"You are an expert Civil Engineering content creator for YouTube Shorts. "
-            "TASK: Generate a unique topic AND a full 50-second script in ONE go. "
-            "DURATION: The total script MUST be between 45 to 50 seconds when spoken. This is for YouTube Shorts. "
+            "TASK: Generate a unique topic AND a full 60-second script in ONE go. "
             f"EXCLUDE these previous topics: {existing_topics or 'None'}. "
-            "\n\nBRANDING & QUALITY REQUIREMENTS:\n"
-            f"You MUST promote this business in the script and metadata:\n{business_details}\n"
-            "CRITICAL: Use PURE TAMIL (தமிழ்) with NO spelling mistakes. Ensure the flow is professional and grammatically correct. "
-            "\n\n1. TOPIC: A viral-style civil engineering mystery, hack, or fact.\n"
-            "2. SCRIPT (TAMIL): Must have a Hook (5s), Body (40s), and a CTA (5s).\n"
+            "\n\nBRANDING REQUIREMENTS:\n"
+            f"You MUST promote this business in the script and metadata:\n{business_details}\n\n"
+            "1. TOPIC: A viral-style civil engineering mystery, hack, or fact.\n"
+            "2. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
             "   CRITICAL: The CTA must say exactly this: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"
             "3. VISUALS: Provide a SIMPLE, 1-3 word English 'visual_query' for Pexels search (e.g. 'pouring concrete', 'crane', 'bricks'). DO NOT write full sentences.\n"
-            "4. METADATA (SEO): The YouTube title MUST include #Shorts. The description MUST include the full Business Name, Contact Number, "
+            "4. METADATA (SEO): The YouTube description MUST include the full Business Name, Contact Number, "
             "Email, Website link, Instagram link, and the 4 key services listed above to reach a wider audience.\n\n"
             "OUTPUT FORMAT (JSON ONLY):\n"
             "{\n"
@@ -175,13 +174,13 @@ class ScriptEngine:
             variation = "CRITICAL: Use a completely unique hook style (e.g., 'Did you know?', 'Stop doing this...', 'The secret of...') and a different explanation structure to ensure originality."
 
         prompt = (
-            f"Write a professional 50-second YouTube Shorts script in PURE TAMIL (தமிழ்) for: {topic['title_en']}. "
+            f"Write a 60-second YouTube Shorts script in Tamil for: {topic['title_en']}. "
             f"{variation} "
             "Requirements: "
             "1. Hook (5s) "
-            "2. Body (40s) with technical civil engineering terms. NO SPELLING MISTAKES. "
+            "2. Body (50s) with technical civil engineering terms. "
             "3. CTA (5s). "
-            "4. Exactly 6-8 scenes total. "
+            "4. Exactly 6 scenes total. "
             "Provide ONLY valid JSON exactly matching this structure: "
             "{'narration': 'Full Tamil script here', "
             "'scenes': [{'visual_query': 'specific english search term for stock video'}], "
