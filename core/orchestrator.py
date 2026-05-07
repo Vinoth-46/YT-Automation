@@ -131,8 +131,44 @@ class Orchestrator:
 
             # ===== DONE =====
             await self._update_job_state(job_id, JobState.AWAITING_APPROVAL)
-            await notify("✅ Video ready for review!")
-            logger.info(f"Job {job_id} is ready for review.")
+            
+            # Check for Auto-Approval
+            try:
+                async with Database.get_session() as session:
+                    from sqlalchemy.orm import selectinload
+                    from core.models import User, Schedule
+                    
+                    # Fetch job details
+                    res = await session.execute(
+                        select(Job).options(
+                            selectinload(Job.schedule).selectinload(Schedule.user)
+                        ).where(Job.id == job_id)
+                    )
+                    job = res.scalar_one_or_none()
+                    
+                    is_auto = False
+                    if job:
+                        if job.schedule:
+                            # Use preference from the linked schedule's user
+                            is_auto = job.schedule.user.approval_mode == "auto"
+                        else:
+                            # For manual jobs, fetch the primary user's preference
+                            user_res = await session.execute(select(User).limit(1))
+                            primary_user = user_res.scalar_one_or_none()
+                            if primary_user:
+                                is_auto = primary_user.approval_mode == "auto"
+                    
+                    if is_auto:
+                        await notify("🚀 Auto-Approval detected! Starting YouTube upload...")
+                        await self.publish_video(job_id)
+                        await notify("✅ Video automatically published to YouTube!")
+                    else:
+                        await notify("✅ Video ready for review!")
+            except Exception as e:
+                logger.warning(f"Auto-approval check failed: {e}")
+                await notify("✅ Video ready for review (Auto-approval check failed)")
+
+            logger.info(f"Job {job_id} processing complete.")
             return True
 
         except Exception as e:

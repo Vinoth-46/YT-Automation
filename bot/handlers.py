@@ -166,6 +166,36 @@ async def clear_schedule_command(update: Update, context: ContextTypes.DEFAULT_T
         await update.message.reply_text(f"❌ Failed to clear schedules: {str(e)}")
 
 
+async def autopost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggle auto-approval mode."""
+    if not context.args:
+        await update.message.reply_text("Usage: /autopost [on/off]")
+        return
+    
+    mode = context.args[0].lower()
+    if mode not in ["on", "off"]:
+        await update.message.reply_text("Invalid mode. Use 'on' or 'off'")
+        return
+
+    db_mode = "auto" if mode == "on" else "manual"
+    
+    try:
+        from sqlalchemy import update as sql_update
+        Database = _get_db()
+        _, _, _, User, _, _ = _get_models()
+        async with Database.get_session() as session:
+            await session.execute(
+                sql_update(User).where(User.telegram_id == update.effective_user.id).values(approval_mode=db_mode)
+            )
+            await session.commit()
+        
+        status_text = "🚀 AUTO-POST ENABLED. Videos will be posted to YouTube automatically at the scheduled time." if mode == "on" else "✋ MANUAL MODE ENABLED. You will need to approve videos in Telegram before they post."
+        await update.message.reply_text(status_text)
+    except Exception as e:
+        logger.error(f"Error in autopost_command: {e}")
+        await update.message.reply_text(f"❌ Failed to update mode: {str(e)}")
+
+
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check status of recent jobs."""
     try:

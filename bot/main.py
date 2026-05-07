@@ -6,7 +6,8 @@ import traceback
 from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
 from bot.handlers import (
     start_command, status_command, generate_command, 
-    schedule_command, view_schedule_command, clear_schedule_command, cancel_command, button_callback
+    schedule_command, view_schedule_command, clear_schedule_command, 
+    autopost_command, cancel_command, button_callback
 )
 from core.config import settings
 import uvicorn
@@ -40,6 +41,7 @@ async def setup_bot_commands(bot):
         BotCommand("schedule", "Set daily posting time (UTC)"),
         BotCommand("view_schedule", "View active schedules"),
         BotCommand("clearschedule", "Revoke/Clear all active schedules"),
+        BotCommand("autopost", "Toggle auto-approval mode (on/off)"),
         BotCommand("cancel", "Cancel current process")
     ]
     
@@ -76,6 +78,20 @@ async def init_services(application):
     except Exception as e:
         logger.error(f"=== SCHEDULER FAILED (non-fatal): {e} ===")
         logger.error(traceback.format_exc())
+
+    # Auto-trigger if requested (Kaggle Startup Mode)
+    if os.environ.get("RUN_ON_STARTUP") == "true":
+        try:
+            logger.info("🚀 Startup trigger detected (RUN_ON_STARTUP=true)")
+            from core.orchestrator import Orchestrator
+            orchestrator = Orchestrator()
+            job_id = await orchestrator.create_job()
+            
+            # Start pipeline in the background
+            application.create_task(orchestrator.run_pipeline(job_id))
+            logger.info(f"✅ Pipeline started on startup for Job {job_id}")
+        except Exception as e:
+            logger.error(f"❌ Startup trigger failed: {e}")
 
 async def post_stop(application):
     """Run before bot shutdown."""
@@ -128,6 +144,7 @@ async def run_bot():
     application.add_handler(CommandHandler('schedule', schedule_command))
     application.add_handler(CommandHandler('view_schedule', view_schedule_command))
     application.add_handler(CommandHandler('clearschedule', clear_schedule_command))
+    application.add_handler(CommandHandler('autopost', autopost_command))
     application.add_handler(CommandHandler('cancel', cancel_command))
     application.add_handler(CallbackQueryHandler(button_callback))
     

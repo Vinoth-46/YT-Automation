@@ -62,7 +62,8 @@ class AudioEngine:
             from google import genai
             from google.genai import types
             
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            # Support multiple keys
+            api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
             
             prompt = (
                 "You are a professional Tamil narrator for an educational YouTube channel. "
@@ -71,23 +72,42 @@ class AudioEngine:
                 f"\n\n{text}"
             )
 
-            logger.info(f"Job {job_id}: Calling Gemini TTS model {model_name}...")
+            response = None
+            last_error = None
             
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_modalities=["audio"],
-                    speech_config=types.SpeechConfig(
-                        voice_config=types.VoiceConfig(
-                            prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                                voice_name="Sadaltager"
+            for i, key in enumerate(api_keys):
+                try:
+                    client = genai.Client(api_key=key)
+                    logger.info(f"Job {job_id}: Calling Gemini TTS model {model_name} (Key #{i+1})...")
+                    
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model=model_name,
+                        contents=prompt,
+                        config=types.GenerateContentConfig(
+                            response_modalities=["audio"],
+                            speech_config=types.SpeechConfig(
+                                voice_config=types.VoiceConfig(
+                                    prebuilt_voice_config=types.PrebuiltVoiceConfig(
+                                        voice_name="Sadaltager"
+                                    )
+                                )
                             )
                         )
                     )
-                )
-            )
+                    break # Success!
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str:
+                        logger.warning(f"Job {job_id}: Key #{i+1} hit rate limit. Trying next key...")
+                        continue
+                    else:
+                        # Non-quota error, probably model name or network
+                        raise e
+
+            if not response:
+                raise last_error or Exception("No response from any Gemini key")
 
             logger.info(f"Job {job_id}: Gemini TTS response received, extracting audio...")
 

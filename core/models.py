@@ -26,7 +26,8 @@ class User(Base):
     id = Column(Integer, primary_key=True)
     telegram_id = Column(Integer, unique=True, nullable=False)
     timezone = Column(String, default="UTC")
-    approval_mode = Column(String, default="manual")
+    # 'manual' (wait for Telegram button) or 'auto' (post immediately)
+    approval_mode = Column(String, default="auto")
     voice_profile = Column(String)
     
     schedules = relationship("Schedule", back_populates="user")

@@ -13,22 +13,34 @@ logger = logging.getLogger(__name__)
 
 class ScriptEngine:
     def __init__(self):
-        self.client = genai.Client(api_key=settings.GEMINI_API_KEY)
-        self.model_name = 'gemini-2.5-flash'
+        # Support multiple keys separated by comma
+        self.api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
+        self.current_key_index = 0
+        self.client = genai.Client(api_key=self.api_keys[0])
+        # Correcting model names to valid versions
+        self.model_name = 'gemini-1.5-flash'
+
+    def _rotate_key(self):
+        """Switch to the next available API key."""
+        if len(self.api_keys) > 1:
+            self.current_key_index = (self.current_key_index + 1) % len(self.api_keys)
+            new_key = self.api_keys[self.current_key_index]
+            self.client = genai.Client(api_key=new_key)
+            logger.info(f"🔄 Rotated to Gemini API Key #{self.current_key_index + 1}")
+            return True
+        return False
 
     async def _generate_content(self, prompt, max_retries=3):
-        """Make an async request to Gemini API with retries and a fallback model."""
+        """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # --- Cool-down Delay for Free Tier ---
         await asyncio.sleep(8)
         
-        models_to_try = [self.model_name, 'gemini-3-flash-preview', 'gemini-2.0-flash']
+        # Using valid public model names
+        models_to_try = [self.model_name, 'gemini-2.0-flash', 'gemini-1.5-pro']
         
         for model in models_to_try:
             for attempt in range(max_retries):
                 try:
-                    # We use asyncio.to_thread because the new google-genai client's async support
-                    # is currently best invoked via thread pool for simple generate_content calls
-                    # Wrap the thread in asyncio.wait_for so a silent SDK hang doesn't freeze the bot
                     response = await asyncio.wait_for(
                         asyncio.to_thread(
                             self.client.models.generate_content,
@@ -47,15 +59,22 @@ class ScriptEngine:
                     continue
                 except Exception as e:
                     error_str = str(e).lower()
+                    
+                    # Key Rotation logic for Rate Limits (429)
                     if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
-                        logger.warning(f"Rate limit hit for {model}: {e}. Falling back to next model immediately.")
-                        break # Skip remaining retries for this model and go to the next one
+                        logger.warning(f"Rate limit hit for {model} with current key.")
+                        if self._rotate_key():
+                            # Retry immediately with the new key for the SAME model
+                            continue 
+                        else:
+                            logger.warning(f"No more keys to rotate. Falling back to next model.")
+                            break 
                         
                     wait_time = (2 ** attempt) * 2
                     logger.warning(f"Gemini API error with {model} (attempt {attempt+1}): {e}. Retrying in {wait_time}s...")
                     await asyncio.sleep(wait_time)
 
-        logger.error("All Gemini API models and retries failed.")
+        logger.error("All Gemini API models and keys failed.")
         return None
 
     async def generate_full_content(self, existing_topics=None):
