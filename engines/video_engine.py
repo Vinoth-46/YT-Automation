@@ -68,69 +68,80 @@ class VideoEngine:
         return assets
         
     async def _generate_srt(self, audio_path, srt_path, script_data=None):
-        """Use faster-whisper locally on Kaggle GPU to generate an SRT file."""
+        """Generate subtitles using Gemini 1.5 Flash (Cloud-based).
+        
+        Offloads transcription to Gemini for 0% CPU/GPU load on Kaggle.
+        """
         try:
-            from faster_whisper import WhisperModel
-            import torch
+            logger.info("Starting cloud transcription with Gemini 1.5 Flash...")
             
-            logger.info("Initializing faster-whisper local model (distil-small)...")
+            # 1. Initialize Gemini client (using the same logic as ScriptEngine)
+            from google import genai
+            from google.genai import types
+            import time
             
-            # Auto-detect device (Kaggle has GPU)
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-            # Use float16 on GPU to save memory, int8 on CPU
-            compute_type = "float16" if device == "cuda" else "int8"
+            client = genai.Client(api_key=settings.GEMINI_API_KEY)
             
-            model = WhisperModel("small", device=device, compute_type=compute_type)
+            # 2. Upload Audio File
+            logger.info(f"Uploading audio for transcription: {os.path.basename(audio_path)}")
+            with open(audio_path, 'rb') as f:
+                audio_file = client.files.upload(file=f)
             
-            initial_prompt = ""
-            if script_data and script_data.get("narration"):
-                # No 896-char limit here! We can use the full narration context.
-                initial_prompt = script_data["narration"]
+            # Wait for processing
+            while audio_file.state.name == "PROCESSING":
+                time.sleep(2)
+                audio_file = client.files.get(name=audio_file.name)
             
-            logger.info(f"Starting local transcription on {device}...")
-            
-            segments, info = model.transcribe(
-                audio_path,
-                beam_size=5,
-                language="ta",
-                initial_prompt=initial_prompt,
-                word_timestamps=True
+            if audio_file.state.name == "FAILED":
+                raise Exception("Gemini audio processing failed.")
+
+            # 3. Request Transcription in SRT format
+            prompt = (
+                "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
+                "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
+                "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
+                "Only return the SRT content, no extra text."
             )
             
-            # Convert to SRT
-            def format_time(seconds):
-                ms = int((seconds % 1) * 1000)
-                m, s = divmod(int(seconds), 60)
-                h, m = divmod(m, 60)
-                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+            response = client.models.generate_content(
+                model="models/gemini-1.5-flash",
+                contents=[audio_file, prompt],
+                config=types.GenerateContentConfig(
+                    temperature=0.0,
+                    top_p=0.95,
+                    top_k=40,
+                )
+            )
             
-            words_list = []
-            for segment in segments:
-                for word in segment.words:
-                    words_list.append(word)
+            srt_content = response.text.strip()
             
-            if not words_list:
-                logger.warning("Whisper returned no words.")
+            # Clean up markdown if Gemini wrapped it in ```srt ... ```
+            if srt_content.startswith("```"):
+                srt_content = "\n".join(srt_content.split("\n")[1:-1])
+
+            if not srt_content or "1" not in srt_content:
+                logger.error("Gemini returned empty or invalid SRT.")
                 return False
-                
+
             with open(srt_path, "w", encoding="utf-8") as f:
-                for i, word_data in enumerate(words_list):
-                    start = format_time(word_data.start)
-                    end = format_time(word_data.end)
-                    word = word_data.word.strip()
-                    f.write(f"{i+1}\n{start} --> {end}\n{word}\n\n")
+                f.write(srt_content)
+                
+            logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
             
-            logger.info(f"Generated SRT locally with {len(words_list)} words.")
+            # Cleanup file from Gemini Cloud
+            try:
+                client.files.delete(name=audio_file.name)
+            except:
+                pass
+                
             return True
-            
-        except ImportError:
-            logger.error("faster-whisper not installed. Run '!pip install faster-whisper'")
-            return False
+
         except Exception as e:
-            logger.error(f"Local Whisper failed: {e}")
+            logger.error(f"Cloud transcription failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
+
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path, script_data=None):
         """Standardize clips, concatenate, and sync with audio using FFmpeg.
         
