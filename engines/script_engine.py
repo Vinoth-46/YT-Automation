@@ -18,11 +18,11 @@ class ScriptEngine:
         self.current_key_index = 0
         self.client = genai.Client(
             api_key=self.api_keys[0],
-            http_options={'api_version': 'v1'}
+            http_options={'api_version': 'v1beta'}
         )
         # Setting default model to a stable text version
         self.model_name = 'gemini-1.5-flash'
-        logger.info(f"Initialized ScriptEngine with {len(self.api_keys)} keys. Primary model: {self.model_name} (API v1)")
+        logger.info(f"Initialized ScriptEngine with {len(self.api_keys)} keys. Primary model: {self.model_name} (API v1beta)")
 
     def _rotate_key(self):
         """Switch to the next available API key."""
@@ -31,7 +31,7 @@ class ScriptEngine:
             new_key = self.api_keys[self.current_key_index]
             self.client = genai.Client(
                 api_key=new_key,
-                http_options={'api_version': 'v1'}
+                http_options={'api_version': 'v1beta'}
             )
             logger.info(f"🔄 Rotated to Gemini API Key #{self.current_key_index + 1}")
             return True
@@ -39,11 +39,12 @@ class ScriptEngine:
 
     async def _generate_content(self, prompt, max_retries=3):
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
-        # Standard Gemini model names
+        # Using the experimental models from your specific quota list
         models_to_try = [
-            'gemini-1.5-flash',      # Primary
-            'gemini-1.5-pro',        # Secondary
-            'gemini-1.0-pro'         # Legacy stable fallback
+            'gemini-3.1-flash',      # From your list
+            'gemini-3.1-pro',        # From your list
+            'gemini-2.5-flash',      # From your list
+            'gemini-1.5-flash'       # Legacy backup
         ]
         
         for model in models_to_try:
