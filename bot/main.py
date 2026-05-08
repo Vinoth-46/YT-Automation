@@ -21,6 +21,35 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ── Security: Redact bot token from httpx logs ──────────────────────────────
+class _TokenRedactFilter(logging.Filter):
+    """Replace the Telegram bot token in log messages with [REDACTED]."""
+    def __init__(self, token: str):
+        super().__init__()
+        self._token = token
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if self._token and self._token in record.getMessage():
+            record.msg = record.msg.replace(self._token, "bot[REDACTED]")
+            record.args = ()
+        return True
+
+def _apply_token_filter():
+    try:
+        token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+        if not token:
+            from core.config import settings
+            token = settings.TELEGRAM_BOT_TOKEN or ""
+        if token:
+            _f = _TokenRedactFilter(token)
+            logging.getLogger("httpx").addFilter(_f)
+            logging.getLogger("telegram").addFilter(_f)
+    except Exception:
+        pass
+
+_apply_token_filter()
+# ─────────────────────────────────────────────────────────────────────────────
+
 app = FastAPI()
 
 # Global reference  shutdown

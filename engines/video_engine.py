@@ -200,13 +200,23 @@ class VideoEngine:
                 import urllib.request
                 font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
                 urllib.request.urlretrieve(font_url, tamil_font_path)
-                # Force system to recognize new font
-                try:
-                    import subprocess
-                    subprocess.run(["fc-cache", "-f", fonts_dir], check=False)
-                    logger.info(f"Font cache updated for {fonts_dir}")
-                except Exception:
-                    pass
+
+            # ALWAYS register the font with the system on every run
+            # (fc-cache must run even if font already exists, to ensure libass finds it)
+            try:
+                import subprocess
+                import shutil
+                # Copy to system font directory for guaranteed detection
+                system_font_dir = "/usr/local/share/fonts/truetype/noto"
+                os.makedirs(system_font_dir, exist_ok=True)
+                system_font_path = os.path.join(system_font_dir, "NotoSansTamil-Bold.ttf")
+                if not os.path.exists(system_font_path):
+                    shutil.copy2(tamil_font_path, system_font_path)
+                # Rebuild full system font cache
+                subprocess.run(["fc-cache", "-fv"], check=False, capture_output=True)
+                logger.info(f"Font registered to system: {system_font_path}")
+            except Exception as fe:
+                logger.warning(f"Font system registration failed (non-fatal): {fe}")
             
             logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
             
