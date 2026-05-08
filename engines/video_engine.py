@@ -262,7 +262,8 @@ class VideoEngine:
             concat_cmd = [
                 "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
-                "-c", "copy",  # Fast copy since they are already identical format
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-r", "30", "-an",
                 concat_output
             ]
             
@@ -309,7 +310,9 @@ class VideoEngine:
                 main_cmd = [
                     "ffmpeg", "-y", "-threads", THREADS,
                     "-stream_loop", "-1", "-i", concat_output,
-                    "-t", str(main_duration), "-c:v", "copy",
+                    "-t", str(main_duration),
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                    "-pix_fmt", "yuv420p", "-r", "30",
                     main_video_mp4
                 ]
                 logger.info(f"FFmpeg: Trimming main video to {main_duration}s...")
@@ -346,14 +349,14 @@ class VideoEngine:
                 if proc_cta.returncode != 0:
                     logger.error(f"FFmpeg CTA generation failed: {stderr.decode()[-300:]}")
                 
-                # 3. Write final concat list
+                # 3. Final concat list - use absolute paths to avoid CWD issues
                 with open(final_concat_list, "w") as f:
-                    f.write(f"file '{os.path.basename(main_video_mp4)}'\n")
-                    f.write(f"file '{os.path.basename(cta_mp4)}'\n")
+                    f.write(f"file '{os.path.abspath(main_video_mp4)}'\n")
+                    f.write(f"file '{os.path.abspath(cta_mp4)}'\n")
             else:
                 # Fallback if no CTA images or audio too short
                 with open(final_concat_list, "w") as f:
-                    f.write(f"file '{os.path.basename(concat_output)}'\n")
+                    f.write(f"file '{os.path.abspath(concat_output)}'\n")
             
             # Step 3: Merge with audio
             logger.info(f"FFmpeg: Merging final video with audio and subtitles...")
@@ -370,14 +373,15 @@ class VideoEngine:
                 # Re-encode final video to burn subtitles with Tamil font
                 merge_cmd = [
                     "ffmpeg", "-y", "-threads", THREADS,
-                    "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
                     "-vf", f"subtitles='{escaped_srt_path}':fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=65,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
+                    "-map", "0:v:0", "-map", "1:a:0",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "192k",
+                    "-profile:v", "baseline", "-level", "3.0",
+                    "-pix_fmt", "yuv420p", "-r", "30",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
@@ -393,16 +397,25 @@ class VideoEngine:
                     stderr=asyncio.subprocess.PIPE,
                     env=env
                 )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900)
+                
+                if process.returncode != 0:
+                    error_log = stderr.decode()
+                    logger.error(f"FFmpeg final merge failed with code {process.returncode}")
+                    logger.error(f"FFmpeg Error: {error_log[-500:]}")
+                    raise Exception(f"Video rendering failed: {error_log[-200:]}")
             else:
-                # Standard fast copy if no subtitles
+                # Standard re-encode if no subtitles
                 merge_cmd = [
                     "ffmpeg", "-y", "-threads", THREADS,
-                    "-stream_loop", "-1" if not cta_image else "0",
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "192k",
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                    "-profile:v", "baseline", "-level", "3.0",
+                    "-pix_fmt", "yuv420p", "-r", "30",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
