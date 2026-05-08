@@ -194,12 +194,25 @@ class VideoEngine:
             fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
             os.makedirs(fonts_dir, exist_ok=True)
             tamil_font_path = os.path.join(fonts_dir, "NotoSansTamil-Bold.ttf")
-            
+            latin_font_path = os.path.join(fonts_dir, "NotoSans-Bold.ttf")
+
             if not os.path.exists(tamil_font_path):
-                logger.info("Downloading Noto Sans Tamil font for subtitles...")
+                logger.info("Downloading Noto Sans Tamil font...")
                 import urllib.request
                 font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
                 urllib.request.urlretrieve(font_url, tamil_font_path)
+
+            # Also download Noto Sans Bold for Latin/English characters
+            # (NotoSansTamil has no Latin glyphs — English words show as □ without this)
+            if not os.path.exists(latin_font_path):
+                logger.info("Downloading Noto Sans (Latin fallback) font...")
+                import urllib.request
+                latin_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
+                try:
+                    urllib.request.urlretrieve(latin_url, latin_font_path)
+                    logger.info("Noto Sans (Latin) downloaded OK")
+                except Exception as le:
+                    logger.warning(f"Latin font download failed (non-fatal): {le}")
 
             # Build a custom fonts.conf so FFmpeg/libass finds the Tamil font
             # without relying on the system fontconfig cache (which is unreliable on Kaggle)
@@ -429,7 +442,8 @@ class VideoEngine:
                             f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{text}"
                         )
 
-                    # ASS header with 1080x1920 resolution and explicit font path via FontName
+                    # ASS header: 1080x1920 (Shorts), MarginV=380 to appear ABOVE YouTube UI overlay
+                    # YouTube Shorts UI (channel/title/subscribe/nav) covers bottom ~300px on mobile
                     ass_header = (
                         "[Script Info]\n"
                         "ScriptType: v4.00+\n"
@@ -441,14 +455,33 @@ class VideoEngine:
                         "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,"
                         "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
                         "Alignment,MarginL,MarginR,MarginV,Encoding\n"
-                        "Style: Default,Noto Sans Tamil,65,&H00FFFFFF,&H00FFFFFF,"
-                        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,120,1\n\n"
+                        # Alignment=2 = bottom-center, MarginV=380 = 380px from bottom edge
+                        "Style: Default,Noto Sans Tamil,62,&H00FFFFFF,&H00FFFFFF,"
+                        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,380,1\n\n"
                         "[Events]\n"
                         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
                     )
+
+                    def _add_latin_font(text):
+                        """Wrap Latin/English characters with ASS inline font override.
+                        NotoSansTamil has NO Latin glyphs — they render as □ boxes.
+                        This switches to Noto Sans for English words, then back to Tamil.
+                        """
+                        import re as _re2
+                        has_latin_font = os.path.exists(latin_font_path)
+                        if not has_latin_font:
+                            return text  # no fallback font, leave as-is
+                        result = _re2.sub(
+                            r'[A-Za-z0-9][A-Za-z0-9\'\-\.\s]*[A-Za-z0-9]|[A-Za-z0-9]',
+                            lambda m: f"{{\\fnNoto Sans}}{m.group()}{{\\fnNoto Sans Tamil}}",
+                            text
+                        )
+                        return result
                     with open(ass_path, "w", encoding="utf-8") as af:
                         af.write(ass_header)
-                        af.write("\n".join(ass_events))
+                        # Apply Latin font override before writing events
+                        tagged_events = [_add_latin_font(e) for e in ass_events]
+                        af.write("\n".join(tagged_events))
                     logger.info(f"SRT converted to ASS: {ass_path} ({len(ass_events)} lines)")
                     use_ass = True
                 except Exception as ae:
