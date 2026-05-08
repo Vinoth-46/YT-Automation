@@ -364,7 +364,7 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=45,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=3,Outline=2,Shadow=1,MarginV=300,MarginL=60,MarginR=60,WrapStyle=1,Alignment=2,Bold=1'",
+                    "-vf", f"subtitles={safe_srt_path}:fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=55,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
