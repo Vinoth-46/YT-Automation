@@ -346,15 +346,33 @@ async def _run_and_notify(job_id, chat_id, context):
                     [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
                 ]
                 
-                with open(video_path, 'rb') as v:
-                    await context.bot.send_video(
-                        chat_id=chat_id,
-                        video=v,
-                        caption=caption,
-                        reply_markup=InlineKeyboardMarkup(keyboard),
-                        write_timeout=900,
-                        read_timeout=900
-                    )
+                import asyncio
+                from telegram.error import RetryAfter, BadRequest
+                
+                max_retries = 3
+                for attempt in range(max_retries):
+                    try:
+                        with open(video_path, 'rb') as v:
+                            await context.bot.send_video(
+                                chat_id=chat_id,
+                                video=v,
+                                caption=caption,
+                                reply_markup=InlineKeyboardMarkup(keyboard),
+                                write_timeout=1200,
+                                read_timeout=1200,
+                                connect_timeout=1200
+                            )
+                        break
+                    except (RetryAfter, BadRequest) as e:
+                        err_msg = str(e)
+                        if "Too many requests" in err_msg or isinstance(e, RetryAfter):
+                            retry_delay = getattr(e, 'retry_after', 10)
+                            if attempt == max_retries - 1:
+                                raise
+                            logger.warning(f"Telegram rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                            await asyncio.sleep(retry_delay + 1)
+                        else:
+                            raise
                 await status_msg.delete()
         else:
             await status_msg.edit_text(f"❌ Job {job_id} failed. Use /status to check details.")

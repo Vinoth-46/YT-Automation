@@ -194,11 +194,19 @@ class VideoEngine:
             fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
             os.makedirs(fonts_dir, exist_ok=True)
             tamil_font_path = os.path.join(fonts_dir, "NotoSansTamil-Bold.ttf")
+            
             if not os.path.exists(tamil_font_path):
                 logger.info("Downloading Noto Sans Tamil font for subtitles...")
                 import urllib.request
                 font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
                 urllib.request.urlretrieve(font_url, tamil_font_path)
+                # Force system to recognize new font
+                try:
+                    import subprocess
+                    subprocess.run(["fc-cache", "-f", fonts_dir], check=False)
+                    logger.info(f"Font cache updated for {fonts_dir}")
+                except Exception:
+                    pass
             
             logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
             
@@ -366,7 +374,7 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles='{escaped_srt_path}':fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil Bold,Fontsize=65,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
+                    "-vf", f"subtitles='{escaped_srt_path}':fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=65,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
@@ -374,6 +382,17 @@ class VideoEngine:
                     "-movflags", "+faststart",
                     output_path
                 ]
+                
+                # Add fonts directory to fontconfig path environment variable
+                env = os.environ.copy()
+                env["FONTCONFIG_PATH"] = fonts_dir
+                
+                process = await asyncio.create_subprocess_exec(
+                    *merge_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
             else:
                 # Standard fast copy if no subtitles
                 merge_cmd = [
