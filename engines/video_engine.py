@@ -438,9 +438,7 @@ class VideoEngine:
                         t_start = srt_time_to_ass(times[0].strip())
                         t_end   = srt_time_to_ass(times[1].strip())
                         text = " ".join(lines[2:]).replace("\n", "\\N")
-                        ass_events.append(
-                            f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{text}"
-                        )
+                        ass_events.append((t_start, t_end, text))
 
                     # ASS header: 1080x1920 (Shorts), MarginV=380 to appear ABOVE YouTube UI overlay
                     # YouTube Shorts UI (channel/title/subscribe/nav) covers bottom ~300px on mobile
@@ -479,9 +477,12 @@ class VideoEngine:
                         return result
                     with open(ass_path, "w", encoding="utf-8") as af:
                         af.write(ass_header)
-                        # Apply Latin font override before writing events
-                        tagged_events = [_add_latin_font(e) for e in ass_events]
-                        af.write("\n".join(tagged_events))
+                        # Apply Latin font override ONLY to the text, then format event
+                        final_events = []
+                        for t_start, t_end, text in ass_events:
+                            tagged_text = _add_latin_font(text)
+                            final_events.append(f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{tagged_text}")
+                        af.write("\n".join(final_events))
                     logger.info(f"SRT converted to ASS: {ass_path} ({len(ass_events)} lines)")
                     use_ass = True
                 except Exception as ae:
