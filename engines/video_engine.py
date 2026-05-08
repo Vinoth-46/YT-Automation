@@ -75,66 +75,94 @@ class VideoEngine:
         try:
             logger.info("Starting cloud transcription with Gemini 1.5 Flash...")
             
-            # 1. Initialize Gemini client (using the same logic as ScriptEngine)
+            # 1. Initialize Gemini client (supporting multiple keys)
             from google import genai
             from google.genai import types
             import time
             
-            client = genai.Client(api_key=settings.GEMINI_API_KEY)
+            api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
             
-            # 2. Upload Audio File
-            logger.info(f"Uploading audio for transcription: {os.path.basename(audio_path)}")
-            with open(audio_path, 'rb') as f:
-                audio_file = client.files.upload(file=f, config={'mime_type': 'audio/wav'})
-            
-            # Wait for processing
-            while audio_file.state.name == "PROCESSING":
-                time.sleep(2)
-                audio_file = client.files.get(name=audio_file.name)
-            
-            if audio_file.state.name == "FAILED":
-                raise Exception("Gemini audio processing failed.")
-
-            # 3. Request Transcription in SRT format
             prompt = (
                 "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
                 "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
                 "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
                 "Only return the SRT content, no extra text."
             )
-            
-            response = client.models.generate_content(
-                model="models/gemini-1.5-flash",
-                contents=[audio_file, prompt],
-                config=types.GenerateContentConfig(
-                    temperature=0.0,
-                    top_p=0.95,
-                    top_k=40,
-                )
-            )
-            
-            srt_content = response.text.strip()
-            
-            # Clean up markdown if Gemini wrapped it in ```srt ... ```
-            if srt_content.startswith("```"):
-                srt_content = "\n".join(srt_content.split("\n")[1:-1])
 
-            if not srt_content or "1" not in srt_content:
-                logger.error("Gemini returned empty or invalid SRT.")
-                return False
-
-            with open(srt_path, "w", encoding="utf-8") as f:
-                f.write(srt_content)
-                
-            logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
+            audio_file = None
+            client = None
+            last_error = None
             
-            # Cleanup file from Gemini Cloud
-            try:
-                client.files.delete(name=audio_file.name)
-            except:
-                pass
-                
-            return True
+            for i, key in enumerate(api_keys):
+                try:
+                    client = genai.Client(api_key=key, http_options={'api_version': 'v1beta'})
+                    
+                    # 2. Upload Audio File
+                    logger.info(f"Uploading audio for transcription (Key #{i+1}): {os.path.basename(audio_path)}")
+                    with open(audio_path, 'rb') as f:
+                        audio_file = client.files.upload(file=f, config={'mime_type': 'audio/wav'})
+                    
+                    # Wait for processing
+                    while audio_file.state.name == "PROCESSING":
+                        time.sleep(2)
+                        audio_file = client.files.get(name=audio_file.name)
+                    
+                    if audio_file.state.name == "FAILED":
+                        logger.warning(f"Gemini audio processing failed with Key #{i+1}. Trying next key...")
+                        continue
+
+                    # 3. Request Transcription in SRT format
+                    response = client.models.generate_content(
+                        model="models/gemini-flash-latest",
+                        contents=[audio_file, prompt],
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            top_p=0.95,
+                            top_k=40,
+                        )
+                    )
+                    
+                    srt_content = response.text.strip()
+                    
+                    # Clean up markdown if Gemini wrapped it in ```srt ... ```
+                    if srt_content.startswith("```"):
+                        lines = srt_content.split("\n")
+                        if len(lines) > 2:
+                            srt_content = "\n".join(lines[1:-1])
+                        else:
+                            srt_content = srt_content.replace("```srt", "").replace("```", "").strip()
+
+                    if not srt_content or "1" not in srt_content:
+                        logger.warning(f"Gemini returned invalid SRT with Key #{i+1}. Trying next key...")
+                        continue
+
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                        
+                    logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
+                    
+                    # Cleanup file from Gemini Cloud
+                    try:
+                        client.files.delete(name=audio_file.name)
+                    except:
+                        pass
+                        
+                    return True
+
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str or "key not valid" in error_str:
+                        logger.warning(f"Gemini Key #{i+1} failed ({error_str[:100]}). Rotating...")
+                        continue
+                    else:
+                        # For other errors, log and try next key anyway just in case it's key-specific
+                        logger.error(f"Gemini Key #{i+1} unexpected error: {e}")
+                        continue
+
+            if last_error:
+                raise last_error
+            return False
 
         except Exception as e:
             logger.error(f"Cloud transcription failed: {e}")
