@@ -303,80 +303,86 @@ async def _run_and_notify(job_id, chat_id, context):
         
         if success:
             await status_msg.edit_text("📤 Sending video to Telegram...")
-            
+
+            from sqlalchemy import select
+            from core.models import ScriptAsset, VideoAsset
             Database = _get_db()
-            Job, _, _, _, _, _ = _get_models()
+
             async with Database.get_session() as session:
-                from sqlalchemy.orm import selectinload
-                result = await session.execute(
-                    select(Job).options(
-                        selectinload(Job.video),
-                        selectinload(Job.script)
-                    ).where(Job.id == job_id)
+                # Always fetch LATEST to handle regenerated jobs with multiple rows
+                res_v = await session.execute(
+                    select(VideoAsset).where(VideoAsset.job_id == job_id)
+                    .order_by(VideoAsset.id.desc()).limit(1)
                 )
-                job = result.scalar_one()
-                
-                if not job.video:
-                    await status_msg.edit_text("❌ Error: No video asset found in database")
-                    return
-                
-                video_path = job.video.draft_path
-                if not os.path.exists(video_path):
-                    await status_msg.edit_text(f"❌ Error: Video file not found at {video_path}")
-                    return
+                video = res_v.scalar_one_or_none()
 
-                file_size = os.path.getsize(video_path)
-                if file_size < 1024:
-                    await status_msg.edit_text(f"❌ Error: Video file too small ({file_size} bytes)")
-                    return
-
-                score = job.script.similarity_score if job.script and job.script.similarity_score is not None else 0.0
-                originality = 1.0 - score
-                topic = job.script.topic if job.script else "Unknown"
-                caption = (
-                    f"✅ Video Draft Ready!\n\n"
-                    f"📌 Topic: {topic}\n"
-                    f"📊 Originality Score: {originality:.2f}\n"
-                    f"📦 File Size: {file_size // 1024}KB\n\n"
-                    f"What would you like to do?"
+                res_s = await session.execute(
+                    select(ScriptAsset).where(ScriptAsset.job_id == job_id)
+                    .order_by(ScriptAsset.id.desc()).limit(1)
                 )
-                
-                keyboard = [
-                    [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
-                    [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
-                ]
-                
-                import asyncio
-                from telegram.error import RetryAfter, BadRequest
-                
-                max_retries = 3
-                for attempt in range(max_retries):
-                    try:
-                        with open(video_path, 'rb') as v:
-                            await context.bot.send_video(
-                                chat_id=chat_id,
-                                video=v,
-                                caption=caption,
-                                reply_markup=InlineKeyboardMarkup(keyboard),
-                                write_timeout=1200,
-                                read_timeout=1200,
-                                connect_timeout=1200
-                            )
-                        break
-                    except (RetryAfter, BadRequest) as e:
-                        err_msg = str(e)
-                        if "Too many requests" in err_msg or isinstance(e, RetryAfter):
-                            retry_delay = getattr(e, 'retry_after', 10)
-                            if attempt == max_retries - 1:
-                                raise
-                            logger.warning(f"Telegram rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
-                            await asyncio.sleep(retry_delay + 1)
-                        else:
+                script = res_s.scalar_one_or_none()
+
+            if not video:
+                await status_msg.edit_text("❌ Error: No video asset found in database")
+                return
+
+            video_path = video.draft_path
+            if not os.path.exists(video_path):
+                await status_msg.edit_text(f"❌ Error: Video file not found at {video_path}")
+                return
+
+            file_size = os.path.getsize(video_path)
+            if file_size < 1024:
+                await status_msg.edit_text(f"❌ Error: Video file too small ({file_size} bytes)")
+                return
+
+            score = script.similarity_score if script and script.similarity_score is not None else 0.0
+            originality = 1.0 - score
+            topic = script.topic if script else "Unknown"
+            caption = (
+                f"✅ Video Draft Ready!\n\n"
+                f"📌 Topic: {topic}\n"
+                f"📊 Originality Score: {originality:.2f}\n"
+                f"📦 File Size: {file_size // 1024}KB\n\n"
+                f"What would you like to do?"
+            )
+
+            keyboard = [
+                [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
+                [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
+            ]
+
+            import asyncio
+            from telegram.error import RetryAfter, BadRequest
+
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    with open(video_path, 'rb') as v:
+                        await context.bot.send_video(
+                            chat_id=chat_id,
+                            video=v,
+                            caption=caption,
+                            reply_markup=InlineKeyboardMarkup(keyboard),
+                            write_timeout=1200,
+                            read_timeout=1200,
+                            connect_timeout=1200
+                        )
+                    break
+                except (RetryAfter, BadRequest) as e:
+                    err_msg = str(e)
+                    if "Too many requests" in err_msg or isinstance(e, RetryAfter):
+                        retry_delay = getattr(e, 'retry_after', 10)
+                        if attempt == max_retries - 1:
                             raise
-                await status_msg.delete()
+                        logger.warning(f"Telegram rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                        await asyncio.sleep(retry_delay + 1)
+                    else:
+                        raise
+            await status_msg.delete()
         else:
             await status_msg.edit_text(f"❌ Job {job_id} failed. Use /status to check details.")
-            
+
     except Exception as e:
         logger.error(f"Error in _run_and_notify: {e}")
         logger.error(traceback.format_exc())

@@ -180,12 +180,22 @@ class Orchestrator:
                 )
                 job = result.scalar_one()
                 
-                # Fetch script and video assets
-                res_s = await session.execute(select(ScriptAsset).where(ScriptAsset.job_id == job_id))
-                script = res_s.scalar_one()
-                
-                res_v = await session.execute(select(VideoAsset).where(VideoAsset.job_id == job_id))
-                video = res_v.scalar_one()
+                # Fetch LATEST script and video assets (job may have been regenerated)
+                res_s = await session.execute(
+                    select(ScriptAsset).where(ScriptAsset.job_id == job_id)
+                    .order_by(ScriptAsset.id.desc()).limit(1)
+                )
+                script = res_s.scalar_one_or_none()
+                if not script:
+                    raise Exception(f"No script asset found for job {job_id}")
+
+                res_v = await session.execute(
+                    select(VideoAsset).where(VideoAsset.job_id == job_id)
+                    .order_by(VideoAsset.id.desc()).limit(1)
+                )
+                video = res_v.scalar_one_or_none()
+                if not video:
+                    raise Exception(f"No video asset found for job {job_id}")
 
                 # 2. Get YouTube credentials (assuming one channel for now)
                 res_c = await session.execute(select(Channel))

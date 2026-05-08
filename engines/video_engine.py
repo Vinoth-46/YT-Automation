@@ -405,7 +405,7 @@ class VideoEngine:
                     logger.error(f"FFmpeg Error: {error_log[-500:]}")
                     raise Exception(f"Video rendering failed: {error_log[-200:]}")
             else:
-                # Standard re-encode if no subtitles
+                # Standard re-encode if no subtitles - run it here directly
                 merge_cmd = [
                     "ffmpeg", "-y", "-threads", THREADS,
                     "-f", "concat", "-safe", "0",
@@ -420,19 +420,15 @@ class VideoEngine:
                     "-movflags", "+faststart",
                     output_path
                 ]
-            
-            logger.info(f"FFmpeg: Final merge starting...")
-            process = await asyncio.create_subprocess_exec(
-                *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
-            
-            if process.returncode != 0:
-                logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
-                    return True
-                return False
-                
+                logger.info(f"FFmpeg: Final merge starting (no subtitles)...")
+                process = await asyncio.create_subprocess_exec(
+                    *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+                if process.returncode != 0:
+                    logger.error(f"FFmpeg no-srt merge failed: {stderr.decode()[-500:]}")
+                    return False
+
             return True
             
         except asyncio.TimeoutError:
