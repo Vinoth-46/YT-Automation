@@ -354,7 +354,9 @@ class VideoEngine:
             if has_srt:
                 files_to_clean.append(srt_path)
                 
-            safe_srt_path = srt_path.replace("\\", "/") # FFmpeg filter path safety
+            # FFmpeg filter path safety: escape special characters for Linux
+            # In FFmpeg filters, ':' must be escaped as '\:' and '/' is fine but wrapping in quotes is safer.
+            escaped_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
             
             if has_srt:
                 # Re-encode final video to burn subtitles with Tamil font
@@ -364,7 +366,7 @@ class VideoEngine:
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles={safe_srt_path}:fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=55,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
+                    "-vf", f"subtitles='{escaped_srt_path}':fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil Bold,Fontsize=65,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-pix_fmt", "yuv420p",
                     "-c:a", "aac", "-b:a", "192k",
