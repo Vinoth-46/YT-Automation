@@ -46,21 +46,29 @@ class YouTubeEngine:
         if len(safe_title) > 95:
             safe_title = safe_title[:95] + "..."
 
-        # Sanitize and truncate tags to YouTube's 500 char total limit
+        # Build visible hashtag string (appended to description) AND safe_tags (YouTube metadata)
+        hashtag_str = ""
         safe_tags = []
         current_tag_len = 0
         if tags:
+            formatted_tags = []
             for tag in tags:
-                clean_tag = tag.replace("<", "").replace(">", "").replace("#", "").strip()
-                if clean_tag and len(clean_tag) < 50:
-                    if current_tag_len + len(clean_tag) + 1 <= 400:
-                        safe_tags.append(clean_tag)
-                        current_tag_len += len(clean_tag) + 1
+                clean = tag.strip().lstrip("#").replace(" ", "")
+                if clean:
+                    formatted_tags.append(f"#{clean}")
+                    # Also add to tags metadata (without #)
+                    if len(clean) < 50 and current_tag_len + len(clean) + 1 <= 400:
+                        safe_tags.append(clean)
+                        current_tag_len += len(clean) + 1
+            if formatted_tags:
+                hashtag_str = "\n\n" + " ".join(formatted_tags[:30])
+
+        full_description = (description or "") + hashtag_str
 
         body = {
             'snippet': {
                 'title': safe_title,
-                'description': description,
+                'description': full_description,
                 'tags': safe_tags,
                 'categoryId': category_id
             },

@@ -201,22 +201,38 @@ class VideoEngine:
                 font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
                 urllib.request.urlretrieve(font_url, tamil_font_path)
 
-            # ALWAYS register the font with the system on every run
-            # (fc-cache must run even if font already exists, to ensure libass finds it)
+            # Build a custom fonts.conf so FFmpeg/libass finds the Tamil font
+            # without relying on the system fontconfig cache (which is unreliable on Kaggle)
             try:
                 import subprocess
                 import shutil
-                # Copy to system font directory for guaranteed detection
-                system_font_dir = "/usr/local/share/fonts/truetype/noto"
-                os.makedirs(system_font_dir, exist_ok=True)
-                system_font_path = os.path.join(system_font_dir, "NotoSansTamil-Bold.ttf")
-                if not os.path.exists(system_font_path):
-                    shutil.copy2(tamil_font_path, system_font_path)
-                # Rebuild full system font cache
-                subprocess.run(["fc-cache", "-fv"], check=False, capture_output=True)
-                logger.info(f"Font registered to system: {system_font_path}")
+                fc_cache_dir = os.path.join(fonts_dir, "fc_cache")
+                os.makedirs(fc_cache_dir, exist_ok=True)
+                fonts_conf_path = os.path.join(fonts_dir, "fonts.conf")
+                fonts_conf_content = (
+                    '<?xml version="1.0"?>\n'
+                    '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
+                    '<fontconfig>\n'
+                    f'  <dir>{os.path.abspath(fonts_dir)}</dir>\n'
+                    f'  <cachedir>{os.path.abspath(fc_cache_dir)}</cachedir>\n'
+                    '  <match target="font">\n'
+                    '    <edit name="antialias" mode="assign"><bool>true</bool></edit>\n'
+                    '  </match>\n'
+                    '</fontconfig>\n'
+                )
+                with open(fonts_conf_path, 'w') as fconf:
+                    fconf.write(fonts_conf_content)
+                # Build fontconfig cache using our custom config
+                fc_env = os.environ.copy()
+                fc_env["FONTCONFIG_FILE"] = fonts_conf_path
+                result = subprocess.run(
+                    ["fc-cache", "-fv"], env=fc_env, check=False,
+                    capture_output=True, text=True
+                )
+                logger.info(f"Font cache ready. fc-cache: {result.stdout[-100:].strip()}")
             except Exception as fe:
-                logger.warning(f"Font system registration failed (non-fatal): {fe}")
+                logger.warning(f"Font cache setup failed (non-fatal): {fe}")
+                fonts_conf_path = None
             
             logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
             
@@ -375,18 +391,100 @@ class VideoEngine:
             if has_srt:
                 files_to_clean.append(srt_path)
                 
-            # FFmpeg filter path safety: escape special characters for Linux
-            # In FFmpeg filters, ':' must be escaped as '\:' and '/' is fine but wrapping in quotes is safer.
-            escaped_srt_path = srt_path.replace("\\", "/").replace(":", "\\:")
-            
+            # Convert SRT → ASS with explicit Tamil font style baked in
+            # This bypasses fontconfig name-matching entirely
+            ass_path = srt_path.replace(".srt", ".ass")
+            font_abs = os.path.abspath(tamil_font_path).replace("\\", "/")
+            srt_abs  = os.path.abspath(srt_path)
+
             if has_srt:
-                # Re-encode final video to burn subtitles with Tamil font
+                files_to_clean.append(ass_path)
+                # Build ASS from SRT using Python (no external tool needed)
+                try:
+                    import re as _re
+                    with open(srt_abs, "r", encoding="utf-8") as sf:
+                        srt_raw = sf.read()
+
+                    def srt_time_to_ass(t):
+                        """Convert SRT timestamp HH:MM:SS,mmm → ASS H:MM:SS.cc"""
+                        t = t.replace(",", ".")
+                        h, m, rest = t.split(":")
+                        s, ms = rest.split(".")
+                        cs = int(ms) // 10
+                        return f"{int(h)}:{m}:{s}.{cs:02d}"
+
+                    blocks = _re.split(r"\n{2,}", srt_raw.strip())
+                    ass_events = []
+                    for block in blocks:
+                        lines = block.strip().splitlines()
+                        if len(lines) < 3:
+                            continue
+                        times = lines[1].split(" --> ")
+                        if len(times) != 2:
+                            continue
+                        t_start = srt_time_to_ass(times[0].strip())
+                        t_end   = srt_time_to_ass(times[1].strip())
+                        text = " ".join(lines[2:]).replace("\n", "\\N")
+                        ass_events.append(
+                            f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{text}"
+                        )
+
+                    # ASS header with 1080x1920 resolution and explicit font path via FontName
+                    ass_header = (
+                        "[Script Info]\n"
+                        "ScriptType: v4.00+\n"
+                        "PlayResX: 1080\n"
+                        "PlayResY: 1920\n"
+                        "ScaledBorderAndShadow: yes\n\n"
+                        "[V4+ Styles]\n"
+                        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
+                        "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,"
+                        "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+                        "Alignment,MarginL,MarginR,MarginV,Encoding\n"
+                        "Style: Default,Noto Sans Tamil,65,&H00FFFFFF,&H00FFFFFF,"
+                        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,120,1\n\n"
+                        "[Events]\n"
+                        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+                    )
+                    with open(ass_path, "w", encoding="utf-8") as af:
+                        af.write(ass_header)
+                        af.write("\n".join(ass_events))
+                    logger.info(f"SRT converted to ASS: {ass_path} ({len(ass_events)} lines)")
+                    use_ass = True
+                except Exception as ae:
+                    logger.warning(f"ASS conversion failed, falling back to SRT: {ae}")
+                    use_ass = False
+
+                # Set FONTCONFIG_FILE so libass finds our Tamil font
+                env = os.environ.copy()
+                if fonts_conf_path and os.path.exists(fonts_conf_path):
+                    env["FONTCONFIG_FILE"] = fonts_conf_path
+                env["FONTCONFIG_PATH"] = os.path.abspath(fonts_dir)
+
+                # Build subtitle filter - prefer ASS (explicit style), fallback to SRT
+                if use_ass:
+                    # Pass ASS file path directly — no colon-separated options needed.
+                    # fontsdir is redundant when FONTCONFIG_FILE env is set, but include for safety.
+                    ass_abs = os.path.abspath(ass_path).replace(chr(92), '/')
+                    fonts_abs = os.path.abspath(fonts_dir).replace(chr(92), '/')
+                    sub_filter = f"ass='{ass_abs}':fontsdir='{fonts_abs}'"
+                else:
+                    esc = srt_abs.replace("\\", "/")
+                    sub_filter = (
+                        f"subtitles={esc}"
+                        f":fontsdir={os.path.abspath(fonts_dir).replace(chr(92), '/')}"
+                        f":force_style='Fontname=Noto Sans Tamil,Fontsize=65,"
+                        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                        f"BorderStyle=1,Outline=3,Shadow=1,"
+                        f"MarginV=120,MarginL=60,MarginR=60,Alignment=2,Bold=1'"
+                    )
+
                 merge_cmd = [
                     "ffmpeg", "-y", "-threads", THREADS,
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", f"subtitles='{escaped_srt_path}':fontsdir='{fonts_dir.replace(chr(92), '/')}':force_style='Fontname=Noto Sans Tamil,Fontsize=65,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=1,MarginV=500,MarginL=100,MarginR=100,WrapStyle=2,Alignment=2,Bold=1'",
+                    "-vf", sub_filter,
                     "-map", "0:v:0", "-map", "1:a:0",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                     "-profile:v", "baseline", "-level", "3.0",
@@ -396,24 +494,26 @@ class VideoEngine:
                     "-movflags", "+faststart",
                     output_path
                 ]
-                
-                # Add fonts directory to fontconfig path environment variable
-                env = os.environ.copy()
-                env["FONTCONFIG_PATH"] = fonts_dir
-                
+
+                logger.info(f"FFmpeg: Final merge with subtitles ({('ASS' if use_ass else 'SRT')})...")
                 process = await asyncio.create_subprocess_exec(
                     *merge_cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     env=env
                 )
-                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=900)
-                
+                stdout, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=900)
+                stderr_text = stderr_bytes.decode(errors='replace')
+
+                # Log font/subtitle lines from FFmpeg stderr for diagnosis
+                for line in stderr_text.splitlines():
+                    ll = line.lower()
+                    if any(k in ll for k in ["font", "subtitle", "ass", "libass", "cannot", "error", "warn"]):
+                        logger.info(f"[FFmpeg-sub] {line.strip()}")
+
                 if process.returncode != 0:
-                    error_log = stderr.decode()
-                    logger.error(f"FFmpeg final merge failed with code {process.returncode}")
-                    logger.error(f"FFmpeg Error: {error_log[-500:]}")
-                    raise Exception(f"Video rendering failed: {error_log[-200:]}")
+                    logger.error(f"FFmpeg final merge failed (code {process.returncode}): {stderr_text[-400:]}")
+                    raise Exception(f"Video rendering failed: {stderr_text[-200:]}")
             else:
                 # Standard re-encode if no subtitles - run it here directly
                 merge_cmd = [
