@@ -10,7 +10,13 @@ class Settings(BaseSettings):
     PEXELS_API_KEY: str
     GEMINI_API_KEY: str
     TELEGRAM_BOT_TOKEN: str
-    TELEGRAM_CHAT_ID: int
+    TELEGRAM_CHAT_ID: str   # comma-separated list of allowed Telegram user IDs
+
+    @property
+    def ALLOWED_CHAT_IDS(self) -> list[int]:
+        """Parse comma-separated chat IDs into a list of ints."""
+        return [int(x.strip()) for x in self.TELEGRAM_CHAT_ID.split(",") if x.strip()]
+
     GROQ_API_KEY: str = ""
     HF_TOKEN: str = ""
 

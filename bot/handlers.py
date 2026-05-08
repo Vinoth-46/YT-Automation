@@ -8,6 +8,24 @@ from sqlalchemy import select
 logger = logging.getLogger(__name__)
 
 
+# ── Authorization guard ──────────────────────────────────────────────────────
+def _is_authorized(update: Update) -> bool:
+    """Return True only if the sender is in the ALLOWED_CHAT_IDS list."""
+    from core.config import settings
+    user_id = update.effective_user.id if update.effective_user else None
+    return user_id in settings.ALLOWED_CHAT_IDS
+
+async def _reject_unauthorized(update: Update):
+    """Reply with a rejection message for unauthorized users."""
+    user = update.effective_user
+    logger.warning(f"Unauthorized access attempt from user {user.id} (@{user.username})")
+    if update.message:
+        await update.message.reply_text("⛔ You are not authorized to use this bot.")
+    elif update.callback_query:
+        await update.callback_query.answer("⛔ Unauthorized.", show_alert=True)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
 def _get_db():
     """Lazy import Database to avoid import-time crashes."""
     from core.database import Database
@@ -22,6 +40,10 @@ def _get_models():
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle /start command."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
+
     user = update.effective_user
     logger.info(f"Received /start command from user {user.id} ({user.first_name})")
     
@@ -55,6 +77,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Trigger manual generation."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     try:
         await update.message.reply_text(
             "🚀 Starting generation pipeline...\n"
@@ -77,6 +102,9 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Set daily schedule. Usage: /schedule 10:00"""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     if not context.args:
         await update.message.reply_text("Usage: /schedule HH:MM (e.g., /schedule 09:30)")
         return
@@ -110,6 +138,9 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def view_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """View all active schedules."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     try:
         Database = _get_db()
         _, _, Schedule, _, _, _ = _get_models()
@@ -133,6 +164,9 @@ async def view_schedule_command(update: Update, context: ContextTypes.DEFAULT_TY
 
 async def clear_schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Clear all active schedules."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     try:
         from sqlalchemy import delete
         Database = _get_db()
@@ -168,6 +202,9 @@ async def clear_schedule_command(update: Update, context: ContextTypes.DEFAULT_T
 
 async def autopost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Toggle auto-approval mode."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     if not context.args:
         await update.message.reply_text("Usage: /autopost [on/off]")
         return
@@ -198,6 +235,9 @@ async def autopost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Check status of recent jobs."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     try:
         Database = _get_db()
         Job, _, _, _, _, _ = _get_models()
@@ -223,11 +263,17 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancel_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Cancel operation."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     await update.message.reply_text("⛔ Cancellation requested. New tasks will be blocked temporarily.")
 
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle approval/regeneration buttons."""
+    if not _is_authorized(update):
+        await _reject_unauthorized(update)
+        return
     query = update.callback_query
     await query.answer()
     
