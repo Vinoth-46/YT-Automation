@@ -421,9 +421,18 @@ class VideoEngine:
                     def srt_time_to_ass(t):
                         """Convert SRT timestamp HH:MM:SS,mmm → ASS H:MM:SS.cc"""
                         t = t.replace(",", ".")
-                        h, m, rest = t.split(":")
+                        if "." not in t:
+                            t += ".000"
+                        parts = t.split(":")
+                        if len(parts) == 2:
+                            h, m, rest = "0", parts[0], parts[1]
+                        elif len(parts) >= 3:
+                            h, m, rest = parts[0], parts[1], parts[2]
+                        else:
+                            h, m, rest = "0", "0", parts[0]
+                        
                         s, ms = rest.split(".")
-                        cs = int(ms) // 10
+                        cs = int(ms.ljust(3, '0')[:3]) // 10
                         return f"{int(h)}:{m}:{s}.{cs:02d}"
 
                     blocks = _re.split(r"\n{2,}", srt_raw.strip())
@@ -507,10 +516,10 @@ class VideoEngine:
                     sub_filter = (
                         f"subtitles={esc}"
                         f":fontsdir={os.path.abspath(fonts_dir).replace(chr(92), '/')}"
-                        f":force_style='Fontname=Noto Sans Tamil,Fontsize=65,"
+                        f":force_style='Fontname=Noto Sans Tamil,Fontsize=9,"
                         f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
-                        f"BorderStyle=1,Outline=3,Shadow=1,"
-                        f"MarginV=120,MarginL=60,MarginR=60,Alignment=2,Bold=1'"
+                        f"BorderStyle=1,Outline=0.5,Shadow=0.5,"
+                        f"MarginV=57,MarginL=10,MarginR=10,Alignment=2,Bold=1'"
                     )
 
                 merge_cmd = [

@@ -10,10 +10,11 @@ logger = logging.getLogger(__name__)
 
 # ── Authorization guard ──────────────────────────────────────────────────────
 def _is_authorized(update: Update) -> bool:
-    """Return True only if the sender is in the ALLOWED_CHAT_IDS list."""
+    """Return True if the user OR the chat group is in the ALLOWED_CHAT_IDS list."""
     from core.config import settings
-    user_id = update.effective_user.id if update.effective_user else None
-    return user_id in settings.ALLOWED_CHAT_IDS
+    user_id = str(update.effective_user.id) if update.effective_user else ""
+    chat_id = str(update.effective_chat.id) if update.effective_chat else ""
+    return (int(user_id) in settings.ALLOWED_CHAT_IDS if user_id else False) or (int(chat_id) in settings.ALLOWED_CHAT_IDS if chat_id else False)
 
 async def _reject_unauthorized(update: Update):
     """Reply with a rejection message for unauthorized users."""
