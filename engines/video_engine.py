@@ -68,12 +68,100 @@ class VideoEngine:
         return assets
         
     async def _generate_srt(self, audio_path, srt_path, script_data=None):
-        """Generate subtitles using Gemini 1.5 Flash (Cloud-based).
+        """Generate subtitles using Groq Whisper API (primary) with Gemini alignment fallback.
         
-        Offloads transcription to Gemini for 0% CPU/GPU load on Kaggle.
+        Using Groq Whisper with word-level timestamps ensures perfect synchronization.
         """
+        # --- Method 1: Groq Whisper API (Highly accurate, word-level timestamps) ---
+        groq_api_key = settings.GROQ_API_KEY
+        if groq_api_key:
+            try:
+                logger.info("Attempting transcription with Groq Whisper API...")
+                url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                headers = {"Authorization": f"Bearer {groq_api_key}"}
+                
+                with open(audio_path, "rb") as f:
+                    files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
+                    data = {
+                        "model": "whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "word"
+                    }
+                    
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    words = result.get("words", [])
+                    if not words and "segments" in result:
+                        words = []
+                        for seg in result["segments"]:
+                            if "words" in seg:
+                                words.extend(seg["words"])
+                    
+                    if words:
+                        # Group words into 1-3 word clauses (max duration 1.5 seconds)
+                        chunks = []
+                        current_chunk = []
+                        
+                        for w_data in words:
+                            word = w_data.get("word", "")
+                            start = w_data.get("start")
+                            end = w_data.get("end")
+                            
+                            if start is None or end is None:
+                                continue
+                                
+                            word_clean = word.strip()
+                            if not word_clean:
+                                continue
+                                
+                            current_chunk.append(w_data)
+                            
+                            # Determine if we should flush the chunk
+                            should_flush = False
+                            if len(current_chunk) >= 3:
+                                should_flush = True
+                            elif len(current_chunk) > 1 and (end - current_chunk[0]["start"]) > 1.5:
+                                should_flush = True
+                            elif any(char in word_clean for char in [".", ",", "!", "?", "।"]):
+                                should_flush = True
+                                
+                            if should_flush:
+                                chunks.append(current_chunk)
+                                current_chunk = []
+                                
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                            
+                        # Format SRT
+                        def format_time(seconds):
+                            ms = int((seconds % 1) * 1000)
+                            m, s = divmod(int(seconds), 60)
+                            h, m = divmod(m, 60)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                            
+                        with open(srt_path, "w", encoding="utf-8") as f:
+                            for idx, chunk in enumerate(chunks):
+                                start_str = format_time(chunk[0]["start"])
+                                end_str = format_time(chunk[-1]["end"])
+                                text_str = " ".join(w["word"].strip() for w in chunk)
+                                f.write(f"{idx+1}\n{start_str} --> {end_str}\n{text_str}\n\n")
+                                
+                        logger.info(f"Groq transcription complete. SRT with {len(chunks)} synchronized chunks saved to {srt_path}")
+                        return True
+                    else:
+                        logger.warning("Groq Whisper API returned no words in response.")
+                else:
+                    logger.warning(f"Groq Whisper API error (status {resp.status_code}): {resp.text}")
+            except Exception as e:
+                logger.error(f"Groq Whisper API call failed: {e}")
+                logger.error(traceback.format_exc())
+                
+        # --- Method 2: Gemini 1.5 Flash (Fallback, alignment-guided) ---
         try:
-            logger.info("Starting cloud transcription with Gemini 1.5 Flash...")
+            logger.info("Falling back to cloud transcription with Gemini 1.5 Flash...")
             
             # 1. Initialize Gemini client (supporting multiple keys)
             from google import genai
@@ -82,11 +170,22 @@ class VideoEngine:
             
             api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
             
+            narration_text = script_data.get("narration", "") if script_data else ""
+            alignment_prompt = ""
+            if narration_text:
+                alignment_prompt = (
+                    f"Here is the exact Tamil narration script spoken in the audio:\n"
+                    f"\"{narration_text}\"\n\n"
+                    f"Align this exact text with the audio. Do not summarize, translate, or alter the words. "
+                )
+                
             prompt = (
-                "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
-                "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
-                "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
-                "Only return the SRT content, no extra text."
+                f"Listen to the uploaded Tamil audio narration and provide a precise transcription in SRT (SubRip) format.\n"
+                f"{alignment_prompt}\n"
+                f"Ensure each caption group is 1-3 words long for fast-paced YouTube Shorts. "
+                f"The start and end timestamps must align exactly with when the words are spoken in the audio. "
+                f"Format timestamps exactly as HH:MM:SS,mmm. "
+                f"Only return the SRT file content, no markdown block wrappers, comments, or extra text."
             )
 
             audio_file = None
@@ -124,7 +223,7 @@ class VideoEngine:
                     
                     srt_content = response.text.strip()
                     
-                    # Clean up markdown if Gemini wrapped it in ```srt ... ```
+                    # Clean up markdown if Gemini wrapped it in ```srt ... ``` or ``` ... ```
                     if srt_content.startswith("```"):
                         lines = srt_content.split("\n")
                         if len(lines) > 2:
@@ -139,7 +238,7 @@ class VideoEngine:
                     with open(srt_path, "w", encoding="utf-8") as f:
                         f.write(srt_content)
                         
-                    logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
+                    logger.info(f"Gemini transcription complete. SRT saved to {srt_path}")
                     
                     # Cleanup file from Gemini Cloud
                     try:
@@ -156,7 +255,6 @@ class VideoEngine:
                         logger.warning(f"Gemini Key #{i+1} failed ({error_str[:100]}). Rotating...")
                         continue
                     else:
-                        # For other errors, log and try next key anyway just in case it's key-specific
                         logger.error(f"Gemini Key #{i+1} unexpected error: {e}")
                         continue
 
@@ -165,7 +263,7 @@ class VideoEngine:
             return False
 
         except Exception as e:
-            logger.error(f"Cloud transcription failed: {e}")
+            logger.error(f"Cloud transcription fallback failed: {e}")
             import traceback
             logger.error(traceback.format_exc())
             return False
