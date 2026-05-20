@@ -228,7 +228,7 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Publish failed for job {job_id}: {e}")
             await self._update_job_state(job_id, JobState.FAILED)
-            return None
+            raise e
 
     async def _update_job_state(self, job_id, state: JobState):
         """Helper to update job state in database."""

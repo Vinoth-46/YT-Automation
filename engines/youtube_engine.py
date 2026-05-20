@@ -18,7 +18,7 @@ class YouTubeEngine:
         self.youtube = None
         
         if token_data:
-            self.credentials = Credentials.from_authorized_user_info(token_data, settings.YOUTUBE_SCOPES)
+            self.credentials = Credentials.from_authorized_user_info(token_data)
             self._refresh_if_needed()
             self.youtube = build("youtube", "v3", credentials=self.credentials)
 
