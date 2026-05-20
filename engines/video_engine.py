@@ -170,22 +170,11 @@ class VideoEngine:
             
             api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
             
-            narration_text = script_data.get("narration", "") if script_data else ""
-            alignment_prompt = ""
-            if narration_text:
-                alignment_prompt = (
-                    f"Here is the exact Tamil narration script spoken in the audio:\n"
-                    f"\"{narration_text}\"\n\n"
-                    f"Align this exact text with the audio. Do not summarize, translate, or alter the words. "
-                )
-                
             prompt = (
-                f"Listen to the uploaded Tamil audio narration and provide a precise transcription in SRT (SubRip) format.\n"
-                f"{alignment_prompt}\n"
-                f"Ensure each caption group is 1-3 words long for fast-paced YouTube Shorts. "
-                f"The start and end timestamps must align exactly with when the words are spoken in the audio. "
-                f"Format timestamps exactly as HH:MM:SS,mmm. "
-                f"Only return the SRT file content, no markdown block wrappers, comments, or extra text."
+                "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
+                "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
+                "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
+                "Only return the SRT content, no extra text."
             )
 
             audio_file = None
@@ -238,7 +227,7 @@ class VideoEngine:
                     with open(srt_path, "w", encoding="utf-8") as f:
                         f.write(srt_content)
                         
-                    logger.info(f"Gemini transcription complete. SRT saved to {srt_path}")
+                    logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
                     
                     # Cleanup file from Gemini Cloud
                     try:
@@ -263,8 +252,7 @@ class VideoEngine:
             return False
 
         except Exception as e:
-            logger.error(f"Cloud transcription fallback failed: {e}")
-            import traceback
+            logger.error(f"Gemini fallback transcription failed: {e}")
             logger.error(traceback.format_exc())
             return False
 
