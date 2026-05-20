@@ -59,6 +59,7 @@ class ScriptEngine:
                             contents=prompt,
                             config=types.GenerateContentConfig(
                                 temperature=0.9,
+                                tools=[types.Tool(google_search=types.GoogleSearch())]
                             )
                         ),
                         timeout=60
@@ -120,7 +121,7 @@ class ScriptEngine:
             f"4. VISUALS: 1-3 word English 'visual_query' only (e.g. 'crane lift', 'cement mix').\n"
             f"5. METADATA: Description MUST include Business Name, Contact, Website, Instagram, and all 4 services.\n"
             f"6. THUMBNAIL: Generate a simple, bold, high-click-through English text overlay for the thumbnail (max 3-4 words, capitalized, e.g. 'AVOID THIS MISTAKE', 'DON'T TILE YET', 'STOP DOING THIS').\n"
-            f"7. SEO HASHTAGS (CRITICAL for 1M+ views): Generate 30 high-reach tags mixing:\n"
+            f"7. SEO HASHTAGS (CRITICAL for 1M+ views): Use your search grounding tool to query Google/YouTube for the current daily trending and viral hashtags for civil engineering, house construction, home building, and YouTube Shorts in Tamil Nadu and India. Mix the live trending search results with:\n"
             f"   - Tamil viral tags: #தமிழ் #சிவில்_இன்ஜினியரிங் #கட்டுமானம் #வீடு_கட்டுவது_எப்படி #engineering\n"
             f"   - English trending: #civilengineering #construction #shorts #youtubeshorts #viral\n"
             f"   - Topic-specific: tags matching the exact topic being discussed\n"
