@@ -85,7 +85,8 @@ class VideoEngine:
                     data = {
                         "model": "whisper-large-v3",
                         "response_format": "verbose_json",
-                        "timestamp_granularities[]": "word"
+                        "timestamp_granularities[]": "word",
+                        "language": "ta"
                     }
                     
                     async with httpx.AsyncClient() as client:
@@ -101,9 +102,12 @@ class VideoEngine:
                                 words.extend(seg["words"])
                     
                     if words:
-                        # Group words into 1-3 word clauses (max duration 1.5 seconds)
+                        # Group words into 1-2 word clauses (max duration 1.0 second, gap 0.3s)
                         chunks = []
                         current_chunk = []
+                        max_words = 2
+                        max_gap = 0.3
+                        max_duration = 1.0
                         
                         for w_data in words:
                             word = w_data.get("word", "")
@@ -117,21 +121,19 @@ class VideoEngine:
                             if not word_clean:
                                 continue
                                 
+                            if current_chunk:
+                                last_word = current_chunk[-1]
+                                gap = start - last_word.get("end", start)
+                                duration = end - current_chunk[0].get("start", start)
+                                last_word_clean = last_word.get("word", "").strip()
+                                has_punctuation = any(char in last_word_clean for char in [".", ",", "!", "?", "।"])
+                                
+                                if gap > max_gap or duration > max_duration or len(current_chunk) >= max_words or has_punctuation:
+                                    chunks.append(current_chunk)
+                                    current_chunk = []
+                                    
                             current_chunk.append(w_data)
                             
-                            # Determine if we should flush the chunk
-                            should_flush = False
-                            if len(current_chunk) >= 3:
-                                should_flush = True
-                            elif len(current_chunk) > 1 and (end - current_chunk[0]["start"]) > 1.5:
-                                should_flush = True
-                            elif any(char in word_clean for char in [".", ",", "!", "?", "।"]):
-                                should_flush = True
-                                
-                            if should_flush:
-                                chunks.append(current_chunk)
-                                current_chunk = []
-                                
                         if current_chunk:
                             chunks.append(current_chunk)
                             
