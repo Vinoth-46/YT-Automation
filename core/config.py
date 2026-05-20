@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     YOUTUBE_CLIENT_SECRET_FILE: str = os.path.join("credentials", "client_secret.json")
     YOUTUBE_SCOPES: list = [
         "https://www.googleapis.com/auth/youtube.upload",
-        "https://www.googleapis.com/auth/youtube.readonly"
+        "https://www.googleapis.com/auth/youtube.readonly",
+        "https://www.googleapis.com/auth/youtube.force-ssl"
     ]
 
     # Paths

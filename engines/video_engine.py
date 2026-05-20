@@ -37,6 +37,15 @@ class VideoEngine:
         if success and os.path.exists(output_path):
             file_size = os.path.getsize(output_path)
             logger.info(f"Job {job_id}: Video rendered successfully ({file_size // 1024}KB)")
+            
+            # Generate custom thumbnail
+            thumbnail_text = script_data.get("metadata", {}).get("thumbnail_text", "AVOID THIS MISTAKE")
+            thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
+            try:
+                self.generate_thumbnail(output_path, thumbnail_path, thumbnail_text)
+            except Exception as te:
+                logger.error(f"Job {job_id}: Failed to generate thumbnail: {te}")
+                
             return output_path
         else:
             logger.error(f"Job {job_id}: FFmpeg render failed or output file not found")
@@ -763,4 +772,128 @@ class VideoEngine:
             return False
         except Exception as e:
             logger.error(f"Download failed: {e}")
+            return False
+
+    def generate_thumbnail(self, video_path, thumbnail_path, text):
+        """Generate a clickbaity thumbnail from the first second of the video with styled text."""
+        import subprocess
+        from PIL import Image, ImageDraw, ImageFont
+        
+        logger.info(f"Generating thumbnail for {video_path} with text: '{text}'")
+        try:
+            # 1. Extract frame at 1.0 second using FFmpeg
+            cmd = [
+                'ffmpeg', '-y', 
+                '-ss', '1.0', 
+                '-i', video_path, 
+                '-vframes', '1', 
+                thumbnail_path
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            if not os.path.exists(thumbnail_path):
+                logger.error("FFmpeg failed to extract thumbnail frame.")
+                return False
+                
+            # 2. Open the image with Pillow
+            img = Image.open(thumbnail_path)
+            draw = ImageDraw.Draw(img)
+            width, height = img.size
+            
+            # 3. Load font (downloading if missing)
+            font_dir = os.path.join(settings.BASE_DIR, "assets", "fonts")
+            os.makedirs(font_dir, exist_ok=True)
+            font_path = os.path.join(font_dir, "Oswald-Bold.ttf")
+            
+            if not os.path.exists(font_path):
+                try:
+                    import httpx
+                    logger.info("Downloading Oswald-Bold font for thumbnails...")
+                    font_url = "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald-Bold.ttf"
+                    resp = httpx.get(font_url)
+                    if resp.status_code == 200:
+                        with open(font_path, "wb") as f:
+                            f.write(resp.content)
+                except Exception as fe:
+                    logger.warning(f"Failed to download font: {fe}")
+                        
+            # Fallback to default if load fails
+            font = None
+            try:
+                font = ImageFont.truetype(font_path, size=80)
+            except Exception:
+                try:
+                    font = ImageFont.truetype("arial.ttf", size=80)
+                except Exception:
+                    font = ImageFont.load_default()
+                
+            # 4. Text wrap & formatting
+            # Let's split text into lines to fit screen width
+            words = text.upper().split()
+            lines = []
+            current_line = []
+            for word in words:
+                current_line.append(word)
+                line_str = " ".join(current_line)
+                bbox = draw.textbbox((0, 0), line_str, font=font)
+                line_width = bbox[2] - bbox[0]
+                if line_width > width * 0.85:
+                    if len(current_line) > 1:
+                        current_line.pop()
+                        lines.append(" ".join(current_line))
+                        current_line = [word]
+                    else:
+                        lines.append(" ".join(current_line))
+                        current_line = []
+            if current_line:
+                lines.append(" ".join(current_line))
+                
+            # Calculate total text block height
+            line_heights = []
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_heights.append(bbox[3] - bbox[1])
+                
+            total_text_height = sum(line_heights) + (len(lines) - 1) * 20
+            y_start = (height - total_text_height) // 2  # Center vertically
+            
+            # Draw dark semi-transparent backing banner
+            banner_padding = 40
+            banner_top = y_start - banner_padding
+            banner_bottom = y_start + total_text_height + banner_padding
+            
+            # Create overlay image for transparency
+            overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            overlay_draw.rectangle(
+                [(0, banner_top), (width, banner_bottom)], 
+                fill=(0, 0, 0, 180) # 70% opacity black
+            )
+            
+            # Merge back together
+            img = Image.alpha_composite(img.convert('RGBA'), overlay)
+            draw = ImageDraw.Draw(img)
+            
+            # 5. Draw text
+            current_y = y_start
+            for i, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                w = bbox[2] - bbox[0]
+                h = bbox[3] - bbox[1]
+                x = (width - w) // 2
+                
+                # Draw text shadow
+                draw.text((x+4, current_y+4), line, font=font, fill=(0, 0, 0, 255))
+                # Draw text front (vibrant yellow for alternating or white)
+                text_color = (255, 223, 0, 255) if (i == 0 or i == len(lines)-1) else (255, 255, 255, 255)
+                draw.text((x, current_y), line, font=font, fill=text_color)
+                
+                current_y += h + 20
+                
+            # Save final JPEG
+            img.convert('RGB').save(thumbnail_path, 'JPEG', quality=95)
+            logger.info(f"Custom thumbnail generated successfully at {thumbnail_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Thumbnail generation failed: {e}")
             return False

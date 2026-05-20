@@ -1,7 +1,9 @@
+import os
 import logging
 import traceback
 from datetime import datetime
 from sqlalchemy import select, update
+from core.config import settings
 from core.database import Database
 from core.models import Job, JobState, ScriptAsset, AudioAsset, VideoAsset
 
@@ -72,6 +74,7 @@ class Orchestrator:
                     title=script_data.get("metadata", {}).get("title"),
                     description=script_data.get("metadata", {}).get("description"),
                     hashtags=script_data.get("metadata", {}).get("tags"),
+                    thumbnail_text=script_data.get("metadata", {}).get("thumbnail_text", "AVOID THIS MISTAKE"),
                     similarity_score=script_data.get("similarity_score", 0.0)
                 )
                 session.add(script_asset)
@@ -220,6 +223,29 @@ class Orchestrator:
 
             if not video_id:
                 raise Exception("YouTube upload returned no video ID")
+
+            # 4. Upload Custom Thumbnail if exists
+            thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
+            if os.path.exists(thumbnail_path):
+                try:
+                    logger.info("Uploading custom thumbnail...")
+                    yt_engine.upload_thumbnail(video_id, thumbnail_path)
+                except Exception as te:
+                    logger.error(f"Failed to upload thumbnail: {te}")
+
+            # 5. Post Pinned-style CTA Comment
+            comment_text = (
+                "மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! "
+                "உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள்:\n"
+                "📞 Call/WhatsApp: +91 83440 51846\n"
+                "🌐 Website: https://kitchaas-enterprise.com/\n"
+                "📷 Instagram: https://www.instagram.com/nirmal.sunjaiy369"
+            )
+            try:
+                logger.info("Posting CTA comment to YouTube video...")
+                yt_engine.post_comment(video_id, comment_text)
+            except Exception as ce:
+                logger.error(f"Failed to post CTA comment: {ce}")
 
             await self._update_job_state(job_id, JobState.UPLOADED)
             logger.info(f"Video {video_id} published for job {job_id}")

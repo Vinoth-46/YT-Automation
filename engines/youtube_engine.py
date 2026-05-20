@@ -102,6 +102,51 @@ class YouTubeEngine:
             logger.error(f"YouTube upload failed: {e}")
             return None
 
+    def upload_thumbnail(self, video_id, thumbnail_path):
+        """Upload custom thumbnail to a YouTube video."""
+        if not self.youtube:
+            logger.error("YouTube client not initialized.")
+            return False
+            
+        try:
+            request = self.youtube.thumbnails().set(
+                videoId=video_id,
+                media_body=MediaFileUpload(thumbnail_path, mimetype='image/jpeg')
+            )
+            request.execute()
+            logger.info(f"Thumbnail uploaded successfully for video {video_id}!")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload thumbnail: {e}")
+            return False
+
+    def post_comment(self, video_id, text):
+        """Post a top-level comment on a video."""
+        if not self.youtube:
+            logger.error("YouTube client not initialized. Authenticate first.")
+            return None
+            
+        try:
+            request = self.youtube.commentThreads().insert(
+                part="snippet",
+                body={
+                    "snippet": {
+                        "videoId": video_id,
+                        "topLevelComment": {
+                            "snippet": {
+                                "textOriginal": text
+                            }
+                        }
+                    }
+                }
+            )
+            response = request.execute()
+            logger.info(f"Comment posted successfully! ID: {response.get('id')}")
+            return response.get("id")
+        except Exception as e:
+            logger.error(f"Failed to post comment to video {video_id}: {e}")
+            return None
+
     @staticmethod
     def get_credentials_from_file():
         """Helper for OAuth2 flow (local/manual first run)."""

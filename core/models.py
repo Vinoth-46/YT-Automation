@@ -83,6 +83,7 @@ class ScriptAsset(Base):
     title = Column(String)
     description = Column(Text)
     hashtags = Column(JSON)
+    thumbnail_text = Column(String)
     
     job = relationship("Job", back_populates="script")
 
