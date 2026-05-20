@@ -71,7 +71,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🚀 Instant Video Generation\n"
         "📅 Daily Automated Scheduling\n"
         "🔊 High-Quality Tamil Voice (XTTS-v2)\n\n"
-        "Use /generate to start a video or /schedule to set daily time."
+        "Use /generate to start a video automatically, or /generate <your topic> to generate a custom video on a specific topic. Use /schedule to set daily time."
     )
     await update.message.reply_text(welcome_text)
 
@@ -82,14 +82,18 @@ async def generate_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await _reject_unauthorized(update)
         return
     try:
-        await update.message.reply_text(
-            "🚀 Starting generation pipeline...\n"
-            "⚠️ Note: Please wait for this to finish before starting another one to avoid AI rate limits (1 video every 2-3 minutes recommended)."
-        )
+        custom_topic = " ".join(context.args) if context.args else None
+        
+        start_msg = "🚀 Starting custom video generation pipeline...\n" if custom_topic else "🚀 Starting automatic video generation pipeline...\n"
+        if custom_topic:
+            start_msg += f"📌 Topic: {custom_topic}\n"
+        start_msg += "⚠️ Note: Please wait for this to finish before starting another one to avoid AI rate limits (1 video every 2-3 minutes recommended)."
+        
+        await update.message.reply_text(start_msg)
         
         from core.orchestrator import Orchestrator
         orchestrator = Orchestrator()
-        job_id = await orchestrator.create_job()
+        job_id = await orchestrator.create_job(custom_topic=custom_topic)
         
         # Run in background to avoid bot timeout
         context.application.create_task(

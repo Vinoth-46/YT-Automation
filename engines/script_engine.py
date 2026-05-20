@@ -90,7 +90,7 @@ class ScriptEngine:
         logger.error("All Gemini API models and keys failed.")
         return None
 
-    async def generate_full_content(self, existing_topics=None):
+    async def generate_full_content(self, existing_topics=None, custom_topic=None):
         """Mega-Prompt: Generate Topic and Script with Kitchaa's Enterprises branding."""
         business_details = (
             "Name: Nirmal .B.E(Civil)\n"
@@ -106,6 +106,12 @@ class ScriptEngine:
         # Format history for prompt
         history_text = "\n".join([f"- {t}" for t in (existing_topics or [])])
         
+        topic_instruction = (
+            f"Choose a FRESH, NEW engineering insight NOT in the blacklist above."
+            if not custom_topic else
+            f"Focus on this specific user-requested topic/instruction: '{custom_topic}'. Keep the civil engineering/house construction/home building theme."
+        )
+        
         prompt = (
             f"Role: Expert Civil Engineering Content Creator for YouTube Shorts.\n"
             f"Goal: Generate a unique topic AND a full 60-second script.\n\n"
@@ -114,7 +120,7 @@ class ScriptEngine:
             f"BRANDING REQUIREMENTS (Kitchaa's Enterprises):\n"
             f"{business_details}\n\n"
             f"INSTRUCTIONS:\n"
-            f"1. TOPIC: Choose a FRESH, NEW engineering insight NOT in the blacklist above.\n"
+            f"1. TOPIC: {topic_instruction}\n"
             f"2. TITLE: Generate a highly intriguing, clear, benefit-driven YouTube title (e.g. 'Why Your Bathroom Floor Is Lower (Must-Know Tip Before Tiling)' or 'Avoid This Huge Foundation Mistake!') instead of only boring technical wording. It should immediately capture attention and spark curiosity.\n"
             f"3. SCRIPT (TAMIL): Must have a Hook (5s), Body (50s), and a CTA (5s).\n"
             f"   CTA: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"

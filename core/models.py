@@ -64,6 +64,7 @@ class Job(Base):
     originality_score = Column(Float)
     voice_mode = Column(String)
     upload_mode = Column(String)
+    custom_topic = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     
     schedule = relationship("Schedule", back_populates="jobs")

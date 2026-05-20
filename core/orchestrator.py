@@ -18,13 +18,14 @@ class Orchestrator:
         self.audio_engine = AudioEngine()
         self.video_engine = VideoEngine()
 
-    async def create_job(self, schedule_id=None, planned_date=None):
+    async def create_job(self, schedule_id=None, planned_date=None, custom_topic=None):
         """Create a new job record in the database."""
         async with Database.get_session() as session:
             job = Job(
                 schedule_id=schedule_id,
                 planned_date=planned_date or datetime.now(),
-                state=JobState.SCHEDULED
+                state=JobState.SCHEDULED,
+                custom_topic=custom_topic
             )
             session.add(job)
             await session.commit()
@@ -52,13 +53,19 @@ class Orchestrator:
             await self._update_job_state(job_id, JobState.GENERATING_SCRIPT)
             await notify("📝 Stage 1/4: Generating AI Script & Visual Keywords...")
             
+            # Fetch Job to check for a custom topic/prompt
+            async with Database.get_session() as session:
+                res_job = await session.execute(select(Job).where(Job.id == job_id))
+                job_rec = res_job.scalar_one_or_none()
+                custom_topic = job_rec.custom_topic if job_rec else None
+
             # Fetch past topics for exclusion (Checking last 50 for uniqueness)
             async with Database.get_session() as session:
                 res = await session.execute(select(ScriptAsset.topic).order_by(ScriptAsset.id.desc()).limit(50))
                 existing_topics = res.scalars().all()
 
             # Mega-Prompt Call
-            full_data = await self.script_engine.generate_full_content(existing_topics)
+            full_data = await self.script_engine.generate_full_content(existing_topics, custom_topic=custom_topic)
             if not full_data:
                 await notify("❌ Script generation failed — AI returned no content")
                 raise Exception("Content generation (Mega-Prompt) failed")
