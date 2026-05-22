@@ -20,6 +20,12 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     HF_TOKEN: str = ""
 
+    # HeyGen Settings
+    HEYGEN_API_KEY: str = ""
+    HEYGEN_LIVE_MODE: bool = False
+    HEYGEN_AVATAR_ID: str = "Ethan_Constructor_Vest"
+    HEYGEN_VOICE_ID: str = "tamil_authority"
+
     # PostgreSQL Config
     POSTGRES_URL: str = "postgresql+asyncpg://user:password@localhost/yt_automation"
 
