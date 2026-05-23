@@ -14,11 +14,9 @@ class Orchestrator:
         from engines.script_engine import ScriptEngine
         from engines.audio_engine import AudioEngine
         from engines.video_engine import VideoEngine
-        from engines.heygen_engine import HeyGenEngine
         self.script_engine = ScriptEngine()
         self.audio_engine = AudioEngine()
         self.video_engine = VideoEngine()
-        self.heygen_engine = HeyGenEngine()
 
     async def create_job(self, schedule_id=None, planned_date=None, custom_topic=None):
         """Create a new job record in the database."""
@@ -91,70 +89,45 @@ class Orchestrator:
 
             await notify(f"✅ Script ready — Topic: {topic_data.get('title_en', 'N/A')}")
 
-            # ===== STAGE 2: HeyGen Video Generation Initialization =====
+            # ===== STAGE 2: Audio Generation =====
             await self._update_job_state(job_id, JobState.GENERATING_AUDIO)
-            await notify("🔊 Stage 2/4: Checking HeyGen credits & submitting job...")
+            await notify("🔊 Stage 2/4: Generating Tamil Audio Narration...")
             
-            # Pre-flight credit check
-            credits = await self.heygen_engine.check_credits()
-            await notify(f"HeyGen remaining credits: {credits}")
-            if credits < 1.0:
-                await notify(f"❌ HeyGen credits insufficient: {credits} remaining")
-                raise Exception(f"Insufficient HeyGen credits: {credits}")
-                
-            # Submit Video Agent job
-            session_id = await self.heygen_engine.generate_video_agent_job(
-                script_text=script_data.get("narration"),
-                visual_style_prompt=script_data.get("visual_style_prompt")
-            )
+            audio_path = await self.audio_engine.generate_narration(script_data, job_id)
+            if not audio_path:
+                await notify("❌ Audio generation failed")
+                raise Exception("Audio generation failed")
             
-            # Save placeholder AudioAsset so DB relations/logs aren't broken
             async with Database.get_session() as session:
                 audio_asset = AudioAsset(
                     job_id=job_id,
-                    model_name=f"heygen-{settings.HEYGEN_VOICE_ID}",
-                    audio_path=f"heygen_session_{session_id}"
+                    model_name=getattr(self.audio_engine, "primary_model", "gemini-tts"),
+                    audio_path=audio_path
                 )
                 session.add(audio_asset)
                 await session.commit()
 
-            await notify(f"✅ HeyGen job submitted. Session ID: {session_id}")
+            await notify("✅ Audio narration generated")
 
-            # ===== STAGE 3: HeyGen Polling =====
+            # ===== STAGE 3: Visual Asset Gathering =====
             await self._update_job_state(job_id, JobState.GENERATING_VISUALS)
-            await notify("🎨 Stage 3/4: Polling HeyGen AI video generation progress...")
-            
-            video_url = await self.heygen_engine.poll_agent_status(session_id)
-            await notify("✅ HeyGen video generated successfully on cloud")
+            await notify("🎨 Stage 3/4: Fetching stock visuals from Pexels...")
 
-            # ===== STAGE 4: Download & Thumbnail Generation =====
+            # ===== STAGE 4: Video Rendering =====
             await self._update_job_state(job_id, JobState.RENDERING_DRAFT)
-            await notify("🎬 Stage 4/4: Downloading HeyGen video & extracting thumbnail...")
+            await notify("🎬 Stage 4/4: Rendering video with FFmpeg...")
             
-            video_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.mp4")
-            
-            # Download the final video (mock downloads a 5s blue video if live_mode is False)
-            download_success = await self.heygen_engine.download_video(video_url, video_path)
-            if not download_success:
-                await notify("❌ Video download/mock generation failed")
-                raise Exception("HeyGen video download failed")
+            video_path = await self.video_engine.assemble_video(job_id, audio_path, script_data)
+            if not video_path:
+                await notify("❌ Video rendering failed — no output file")
+                raise Exception("Video rendering failed")
             
             if not os.path.exists(video_path):
                 await notify(f"❌ Video file not found at {video_path}")
                 raise Exception(f"Video file not found at {video_path}")
-                
-            # Extract thumbnail frame from downloaded MP4 using Pillow-based overlay
-            thumbnail_text = script_data.get("metadata", {}).get("thumbnail_text", "AVOID THIS MISTAKE")
-            thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
-            try:
-                self.video_engine.generate_thumbnail(video_path, thumbnail_path, thumbnail_text)
-                await notify("✅ Custom Oswald-Bold thumbnail generated")
-            except Exception as te:
-                logger.error(f"Job {job_id}: Failed to generate thumbnail: {te}")
-                await notify("⚠️ Thumbnail generation failed (non-fatal)")
             
             file_size = os.path.getsize(video_path)
-            await notify(f"✅ Video downloaded and processed ({file_size // 1024}KB)")
+            await notify(f"✅ Video rendered ({file_size // 1024}KB)")
             
             async with Database.get_session() as session:
                 video_asset = VideoAsset(

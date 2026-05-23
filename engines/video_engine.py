@@ -603,16 +603,20 @@ class VideoEngine:
 
                 # Build subtitle filter - prefer ASS (explicit style), fallback to SRT
                 if use_ass:
-                    # Pass ASS file path directly — no colon-separated options needed.
-                    # fontsdir is redundant when FONTCONFIG_FILE env is set, but include for safety.
-                    ass_abs = os.path.abspath(ass_path).replace(chr(92), '/')
-                    fonts_abs = os.path.abspath(fonts_dir).replace(chr(92), '/')
-                    sub_filter = f"ass='{ass_abs}':fontsdir='{fonts_abs}'"
+                    # Use relative paths to avoid Windows absolute path colon splitting issue in FFmpeg
+                    ass_rel = os.path.relpath(ass_path).replace(chr(92), '/')
+                    fonts_rel = os.path.relpath(fonts_dir).replace(chr(92), '/')
+                    ass_rel_esc = ass_rel.replace("'", "'\\\\''")
+                    fonts_rel_esc = fonts_rel.replace("'", "'\\\\''")
+                    sub_filter = f"ass='{ass_rel_esc}':fontsdir='{fonts_rel_esc}'"
                 else:
-                    esc = srt_abs.replace("\\", "/")
+                    srt_rel = os.path.relpath(srt_path).replace(chr(92), '/')
+                    fonts_rel = os.path.relpath(fonts_dir).replace(chr(92), '/')
+                    srt_rel_esc = srt_rel.replace("'", "'\\\\''")
+                    fonts_rel_esc = fonts_rel.replace("'", "'\\\\''")
                     sub_filter = (
-                        f"subtitles={esc}"
-                        f":fontsdir={os.path.abspath(fonts_dir).replace(chr(92), '/')}"
+                        f"subtitles='{srt_rel_esc}'"
+                        f":fontsdir='{fonts_rel_esc}'"
                         f":force_style='Fontname=Noto Sans Tamil,Fontsize=9,"
                         f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
                         f"BorderStyle=1,Outline=0.5,Shadow=0.5,"
