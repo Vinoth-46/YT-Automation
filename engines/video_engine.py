@@ -52,7 +52,7 @@ class VideoEngine:
             return None
 
     async def _gather_assets(self, job_id, scenes):
-        """Fetch stock videos from Pexels (async)."""
+        """Fetch stock videos from Pexels and Pixabay (async)."""
         assets = []
         used_video_ids = set()
         
@@ -62,6 +62,11 @@ class VideoEngine:
                 logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
                 
                 asset_url = await self._search_pexels(session, query, used_video_ids)
+                
+                if not asset_url:
+                    logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
+                    asset_url = await self._search_pixabay(session, query, used_video_ids)
+                    
                 if asset_url:
                     local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                     downloaded = await self._download_file(session, asset_url, local_path)
@@ -72,7 +77,7 @@ class VideoEngine:
                     else:
                         logger.warning(f"Job {job_id}: Scene {i+1} download failed")
                 else:
-                    logger.warning(f"Job {job_id}: Scene {i+1} — no Pexels results for '{query}'")
+                    logger.warning(f"Job {job_id}: Scene {i+1} — no results from Pexels or Pixabay for '{query}'")
         
         return assets
         
@@ -702,7 +707,7 @@ class VideoEngine:
                         except Exception:
                             pass
     async def _search_pexels(self, session, query, used_video_ids):
-        """Search Pexels API with technical fallbacks (async)."""
+        """Search Pexels API with technical fallbacks and orientation fallback (async)."""
         query = query.strip().lower()
         
         # Stricter but simpler technical filtering
@@ -716,44 +721,113 @@ class VideoEngine:
         headers = {"Authorization": self.pexels_api_key}
         
         for q in fallbacks:
-            url = f"https://api.pexels.com/videos/search?query={q}&per_page=50&orientation=portrait"
+            # Try portrait orientation first, then try all orientations (landscape/square cropped by FFmpeg)
+            for orientation in ["portrait", "all"]:
+                url = f"https://api.pexels.com/videos/search?query={q}&per_page=50"
+                if orientation == "portrait":
+                    url += "&orientation=portrait"
+                
+                try:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        if response.status != 200:
+                            logger.warning(f"Pexels API returned {response.status} for '{q}' ({orientation})")
+                            continue
+                        
+                        data = await response.json()
+                        
+                        if data.get("videos"):
+                            import random
+                            videos_list = data["videos"]
+                            random.shuffle(videos_list)
+                            
+                            for video in videos_list:
+                                vid_id = video.get("id")
+                                if vid_id not in used_video_ids:
+                                    used_video_ids.add(vid_id)
+                                    video_files = video.get("video_files", [])
+                                    # Find a reasonable quality file (not too large for free tier)
+                                    for vf in video_files:
+                                        width = vf.get("width", 0)
+                                        height = vf.get("height", 0)
+                                        # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
+                                        if 720 <= width <= 1920 or 720 <= height <= 1920:
+                                            logger.info(f"Pexels match: '{q}' ({orientation}) → video {vid_id} ({width}p)")
+                                            return vf["link"]
+                                    # Fallback to smallest file to prevent OOM
+                                    if video_files:
+                                        smallest = min(video_files, key=lambda x: x.get("width", 9999))
+                                        logger.info(f"Pexels match (fallback smallest): '{q}' ({orientation}) → video {vid_id} ({smallest.get('width')}p)")
+                                        return smallest["link"]
+                except asyncio.TimeoutError:
+                    logger.warning(f"Pexels timeout for query '{q}' ({orientation})")
+                except Exception as e:
+                    logger.error(f"Pexels error for query '{q}' ({orientation}): {e}")
+                    
+        logger.warning(f"No Pexels results for '{query}' or fallbacks")
+        return None
+
+    async def _search_pixabay(self, session, query, used_video_ids):
+        """Search Pixabay API as secondary library fallback (async)."""
+        api_key = getattr(settings, "PIXABAY_API_KEY", "")
+        if not api_key:
+            return None
+            
+        query = query.strip().lower()
+        fallbacks = [
+            f"{query} construction",
+            f"{query}",
+            "civil engineering construction",
+            "building site"
+        ]
+        
+        for q in fallbacks:
+            # We fetch up to 30 videos per query from Pixabay
+            url = f"https://pixabay.com/api/videos/?key={api_key}&q={q}&per_page=30"
             try:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                     if response.status != 200:
-                        logger.warning(f"Pexels API returned {response.status} for '{q}'")
+                        logger.warning(f"Pixabay API returned {response.status} for '{q}'")
                         continue
                     
                     data = await response.json()
+                    hits = data.get("hits", [])
                     
-                    if data.get("videos"):
+                    if hits:
                         import random
-                        videos_list = data["videos"]
-                        random.shuffle(videos_list)
+                        random.shuffle(hits)
                         
-                        for video in videos_list:
-                            vid_id = video.get("id")
+                        # Attempt 1: Look for vertical/portrait videos first
+                        for hit in hits:
+                            vid_id = hit.get("id")
                             if vid_id not in used_video_ids:
-                                used_video_ids.add(vid_id)
-                                video_files = video.get("video_files", [])
-                                # Find a reasonable quality file (not too large for free tier)
-                                for vf in video_files:
-                                    width = vf.get("width", 0)
-                                    height = vf.get("height", 0)
-                                    # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
-                                    if 720 <= width <= 1920 or 720 <= height <= 1920:
-                                        logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
-                                        return vf["link"]
-                                # Fallback to smallest file to prevent OOM
-                                if video_files:
-                                    smallest = min(video_files, key=lambda x: x.get("width", 9999))
-                                    logger.info(f"Pexels match (fallback smallest): '{q}' → video {vid_id} ({smallest.get('width')}p)")
-                                    return smallest["link"]
-            except asyncio.TimeoutError:
-                logger.warning(f"Pexels timeout for query '{q}'")
+                                videos = hit.get("videos", {})
+                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                                if size_key in videos:
+                                    vid_info = videos[size_key]
+                                    width = vid_info.get("width", 0)
+                                    height = vid_info.get("height", 0)
+                                    if height > width:  # Portrait video!
+                                        used_video_ids.add(vid_id)
+                                        logger.info(f"Pixabay match (portrait): '{q}' → video {vid_id} ({width}x{height})")
+                                        return vid_info["url"]
+                                        
+                        # Attempt 2: Fallback to any orientation (cropped by FFmpeg)
+                        for hit in hits:
+                            vid_id = hit.get("id")
+                            if vid_id not in used_video_ids:
+                                videos = hit.get("videos", {})
+                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                                if size_key in videos:
+                                    vid_info = videos[size_key]
+                                    width = vid_info.get("width", 0)
+                                    height = vid_info.get("height", 0)
+                                    used_video_ids.add(vid_id)
+                                    logger.info(f"Pixabay match (any): '{q}' → video {vid_id} ({width}x{height})")
+                                    return vid_info["url"]
             except Exception as e:
-                logger.error(f"Pexels error for query '{q}': {e}")
+                logger.error(f"Pixabay error for query '{q}': {e}")
                 
-        logger.warning(f"No Pexels results for '{query}' or fallbacks")
+        logger.warning(f"No Pixabay results for '{query}' or fallbacks")
         return None
 
     async def _download_file(self, session, url, path):
