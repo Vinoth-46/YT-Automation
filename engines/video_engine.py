@@ -368,7 +368,7 @@ class VideoEngine:
                 
                 if text_overlay:
                     text_esc = text_overlay.replace("'", "'\\\\''").replace(":", "\\:")
-                    font_rel = os.path.relpath(latin_font_path).replace(chr(92), '/')
+                    font_rel = os.path.relpath(tamil_font_path).replace(chr(92), '/')
                     drawtext_str = f",drawtext=fontfile='{font_rel}':text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
                     logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (font: '{font_rel}')")
                 else:
@@ -905,13 +905,13 @@ class VideoEngine:
             # 3. Load font (downloading if missing)
             font_dir = os.path.join(settings.BASE_DIR, "assets", "fonts")
             os.makedirs(font_dir, exist_ok=True)
-            font_path = os.path.join(font_dir, "Oswald-Bold.ttf")
+            font_path = os.path.join(font_dir, "NotoSansTamil-Bold.ttf")
             
             if not os.path.exists(font_path):
                 try:
                     import httpx
-                    logger.info("Downloading Oswald-Bold font for thumbnails...")
-                    font_url = "https://github.com/google/fonts/raw/main/ofl/oswald/Oswald-Bold.ttf"
+                    logger.info("Downloading Noto Sans Tamil font for thumbnails...")
+                    font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
                     resp = httpx.get(font_url)
                     if resp.status_code == 200:
                         with open(font_path, "wb") as f:
