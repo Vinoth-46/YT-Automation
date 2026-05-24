@@ -435,22 +435,82 @@ async def _run_and_notify(job_id, chat_id, context):
             title = script.title if script else "Unknown Title"
             desc = script.description if script else "No Description"
             
+            import re
+            
+            eng_desc = desc
+            hindi_title = ""
+            hindi_desc = ""
+            spanish_title = ""
+            spanish_desc = ""
+
+            if "--- HINDI TRANSLATION ---" in desc:
+                parts = desc.split("--- HINDI TRANSLATION ---")
+                eng_desc = parts[0].strip()
+                rest = parts[1]
+                
+                h_part = rest
+                s_part = ""
+                if "--- SPANISH TRANSLATION ---" in rest:
+                    h_part, s_part = rest.split("--- SPANISH TRANSLATION ---")
+                
+                h_part = h_part.strip()
+                h_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', h_part, re.DOTALL)
+                h_desc_match = re.search(r'DESC:\s*(.*)', h_part, re.DOTALL)
+                if h_title_match:
+                    hindi_title = h_title_match.group(1).strip()
+                if h_desc_match:
+                    hindi_desc = h_desc_match.group(1).strip()
+                    
+                if s_part:
+                    s_part = s_part.strip()
+                    s_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', s_part, re.DOTALL)
+                    s_desc_match = re.search(r'DESC:\s*(.*)', s_part, re.DOTALL)
+                    if s_title_match:
+                        spanish_title = s_title_match.group(1).strip()
+                    if s_desc_match:
+                        spanish_desc = s_desc_match.group(1).strip()
+            
             def _escape_md(text):
                 """Escape special characters for Telegram Markdown parse mode."""
                 if not text:
-                    return text
+                    return ""
                 # For standard Markdown mode, escape problematic chars inside code blocks
                 # Replace backticks which break code blocks
                 return text.replace("`", "'").replace("*", "").replace("_", " ").replace("[", "(").replace("]", ")")
             
             safe_title = _escape_md(title)
-            safe_desc = _escape_md(desc)
+            safe_eng_desc = _escape_md(eng_desc)
+            
+            safe_hindi_title = _escape_md(hindi_title)
+            safe_hindi_desc = _escape_md(hindi_desc)
+            
+            safe_spanish_title = _escape_md(spanish_title)
+            safe_spanish_desc = _escape_md(spanish_desc)
             
             metadata_message = (
-                f"📋 *YouTube Subtitles English Metadata* (Tap text to copy):\n\n"
+                f"📋 *YOUTUBE METADATA* (Tap text to copy)\n\n"
+                f"🇬🇧 *ENGLISH*\n"
                 f"🔹 *Title:*\n`{safe_title}`\n\n"
-                f"🔹 *Description:*\n`{safe_desc}`"
+                f"🔹 *Description:*\n`{safe_eng_desc}`\n\n"
             )
+            
+            if hindi_title:
+                metadata_message += (
+                    f"🇮🇳 *HINDI (हिन्दी)*\n"
+                    f"🔹 *Title:*\n`{safe_hindi_title}`\n\n"
+                    f"🔹 *Description:*\n`{safe_hindi_desc}`\n\n"
+                )
+                
+            if spanish_title:
+                metadata_message += (
+                    f"🇪🇸 *SPANISH (ESPAÑOL)*\n"
+                    f"🔹 *Title:*\n`{safe_spanish_title}`\n\n"
+                    f"🔹 *Description:*\n`{safe_spanish_desc}`\n\n"
+                )
+            
+            # Trim trailing newlines
+            metadata_message = metadata_message.strip()
+            
             try:
                 await context.bot.send_message(
                     chat_id=chat_id,
@@ -462,10 +522,24 @@ async def _run_and_notify(job_id, chat_id, context):
                 logger.warning(f"Markdown metadata message failed: {me}. Sending plain text.")
                 try:
                     plain_message = (
-                        f"📋 YouTube English Metadata (Tap to copy):\n\n"
+                        f"📋 YouTube Metadata (Tap to copy):\n\n"
+                        f"🇬🇧 ENGLISH:\n"
                         f"🔹 Title:\n{title}\n\n"
-                        f"🔹 Description:\n{desc}"
+                        f"🔹 Description:\n{eng_desc}\n\n"
                     )
+                    if hindi_title:
+                        plain_message += (
+                            f"🇮🇳 HINDI:\n"
+                            f"🔹 Title:\n{hindi_title}\n\n"
+                            f"🔹 Description:\n{hindi_desc}\n\n"
+                        )
+                    if spanish_title:
+                        plain_message += (
+                            f"🇪🇸 SPANISH:\n"
+                            f"🔹 Title:\n{spanish_title}\n\n"
+                            f"🔹 Description:\n{spanish_desc}\n\n"
+                        )
+                    plain_message = plain_message.strip()
                     await context.bot.send_message(chat_id=chat_id, text=plain_message)
                 except Exception as pe:
                     logger.error(f"Could not send metadata message at all: {pe}")

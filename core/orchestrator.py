@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import traceback
 from datetime import datetime
@@ -73,15 +74,32 @@ class Orchestrator:
             topic_data = full_data['topic']
             script_data = full_data['script']
             
+            metadata = script_data.get("metadata", {})
+            eng_desc = metadata.get("description", "")
+            hindi_title = metadata.get("hindi_title", "")
+            hindi_desc = metadata.get("hindi_description", "")
+            spanish_title = metadata.get("spanish_title", "")
+            spanish_desc = metadata.get("spanish_description", "")
+
+            # Combine them in a structured way for the DB description field
+            combined_desc = eng_desc
+            if hindi_title or hindi_desc or spanish_title or spanish_desc:
+                combined_desc += "\n\n--- HINDI TRANSLATION ---\n"
+                combined_desc += f"TITLE: {hindi_title}\n"
+                combined_desc += f"DESC: {hindi_desc}\n"
+                combined_desc += "\n--- SPANISH TRANSLATION ---\n"
+                combined_desc += f"TITLE: {spanish_title}\n"
+                combined_desc += f"DESC: {spanish_desc}\n"
+
             async with Database.get_session() as session:
                 script_asset = ScriptAsset(
                     job_id=job_id,
                     topic=topic_data.get("title_en"),
                     script_text=script_data.get("narration"),
-                    title=script_data.get("metadata", {}).get("title"),
-                    description=script_data.get("metadata", {}).get("description"),
-                    hashtags=script_data.get("metadata", {}).get("tags"),
-                    thumbnail_text=script_data.get("metadata", {}).get("thumbnail_text", "AVOID THIS MISTAKE"),
+                    title=metadata.get("title"),
+                    description=combined_desc,
+                    hashtags=metadata.get("tags"),
+                    thumbnail_text=metadata.get("thumbnail_text", "AVOID THIS MISTAKE"),
                     similarity_score=script_data.get("similarity_score", 0.0)
                 )
                 session.add(script_asset)
@@ -268,20 +286,66 @@ class Orchestrator:
                 except Exception as te:
                     logger.error(f"Failed to upload thumbnail: {te}")
 
-            # 5. Set Multi-Language Localizations (English + Tamil)
+            # 5. Set Multi-Language Localizations (English + Tamil + Hindi + Spanish)
             try:
+                desc = script.description or ""
+                eng_desc = desc
+                hindi_title = ""
+                hindi_desc = ""
+                spanish_title = ""
+                spanish_desc = ""
+
+                if "--- HINDI TRANSLATION ---" in desc:
+                    parts = desc.split("--- HINDI TRANSLATION ---")
+                    eng_desc = parts[0].strip()
+                    rest = parts[1]
+                    
+                    h_part = rest
+                    s_part = ""
+                    if "--- SPANISH TRANSLATION ---" in rest:
+                        h_part, s_part = rest.split("--- SPANISH TRANSLATION ---")
+                    
+                    h_part = h_part.strip()
+                    h_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', h_part, re.DOTALL)
+                    h_desc_match = re.search(r'DESC:\s*(.*)', h_part, re.DOTALL)
+                    if h_title_match:
+                        hindi_title = h_title_match.group(1).strip()
+                    if h_desc_match:
+                        hindi_desc = h_desc_match.group(1).strip()
+                        
+                    if s_part:
+                        s_part = s_part.strip()
+                        s_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', s_part, re.DOTALL)
+                        s_desc_match = re.search(r'DESC:\s*(.*)', s_part, re.DOTALL)
+                        if s_title_match:
+                            spanish_title = s_title_match.group(1).strip()
+                        if s_desc_match:
+                            spanish_desc = s_desc_match.group(1).strip()
+
+                localizations = {
+                    "en": {
+                        "title": script.title or "",
+                        "description": eng_desc or ""
+                    },
+                    "ta": {
+                        "title": script.topic or script.title or "",
+                        "description": eng_desc or ""
+                    }
+                }
+                if hindi_title:
+                    localizations["hi"] = {
+                        "title": hindi_title,
+                        "description": hindi_desc or eng_desc
+                    }
+                if spanish_title:
+                    localizations["es"] = {
+                        "title": spanish_title,
+                        "description": spanish_desc or eng_desc
+                    }
+
                 yt_engine.set_video_localizations(
                     video_id=video_id,
-                    localizations={
-                        "en": {
-                            "title": script.title or "",
-                            "description": script.description or ""
-                        },
-                        "ta": {
-                            "title": script.topic or script.title or "",
-                            "description": script.description or ""
-                        }
-                    }
+                    localizations=localizations
                 )
             except Exception as le:
                 logger.warning(f"Failed to set video localizations (non-fatal): {le}")
