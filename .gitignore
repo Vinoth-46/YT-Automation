@@ -33,6 +33,7 @@ temp/
 assets/*
 !assets/Watermark/
 !assets/cta_images/
+!assets/fonts/
 *.log
 *.sqlite
 credentials/

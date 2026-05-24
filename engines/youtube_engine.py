@@ -184,6 +184,48 @@ class YouTubeEngine:
             logger.error(f"Failed to upload caption: {e}")
             return False
 
+    def set_video_localizations(self, video_id, localizations):
+        """Set multi-language titles and descriptions for a video.
+        
+        Args:
+            video_id: YouTube video ID
+            localizations: dict of {language_code: {"title": "...", "description": "..."}}
+                           e.g. {"en": {"title": "...", "description": "..."}, "ta": {...}}
+        """
+        if not self.youtube:
+            logger.error("YouTube client not initialized.")
+            return False
+            
+        try:
+            # First fetch the current video snippet to preserve existing data
+            video_response = self.youtube.videos().list(
+                part="snippet,localizations",
+                id=video_id
+            ).execute()
+            
+            if not video_response.get("items"):
+                logger.warning(f"Video {video_id} not found for localization update")
+                return False
+            
+            video_data = video_response["items"][0]
+            existing_localizations = video_data.get("localizations", {})
+            existing_localizations.update(localizations)
+            
+            # Update with merged localizations
+            self.youtube.videos().update(
+                part="localizations",
+                body={
+                    "id": video_id,
+                    "localizations": existing_localizations
+                }
+            ).execute()
+            
+            logger.info(f"Video localizations set for {list(localizations.keys())} on video {video_id}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to set video localizations: {e}")
+            return False
+
     @staticmethod
     def get_credentials_from_file():
         """Helper for OAuth2 flow (local/manual first run)."""

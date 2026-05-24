@@ -99,7 +99,7 @@ async def init_services(application):
 
     try:
         from core.scheduler import SchedulerService
-        scheduler = SchedulerService()
+        scheduler = SchedulerService(bot=application.bot)
         await scheduler.load_schedules()
         scheduler.start()
         application.bot_data["scheduler"] = scheduler

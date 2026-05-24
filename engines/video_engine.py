@@ -56,26 +56,51 @@ class VideoEngine:
         assets = []
         
         # Load persistent used video IDs to avoid repetition across runs
+        # Format: "video_id|timestamp" per line for expiry tracking
         used_videos_file = os.path.join(settings.OUTPUT_DIR, "used_video_ids.txt")
         used_video_ids = set()
+        import time
+        now = time.time()
+        max_age_seconds = 30 * 24 * 3600  # 30 days expiry
+        valid_lines = []
+        
         if os.path.exists(used_videos_file):
             try:
                 with open(used_videos_file, "r") as f:
-                    used_video_ids = set(line.strip() for line in f if line.strip())
-                logger.info(f"Loaded {len(used_video_ids)} historical used video IDs from cache")
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split("|", 1)
+                        vid_id = parts[0]
+                        ts = float(parts[1]) if len(parts) > 1 else 0
+                        if now - ts < max_age_seconds:
+                            used_video_ids.add(str(vid_id))
+                            valid_lines.append(f"{vid_id}|{ts}")
+                        # else: expired, skip
+                logger.info(f"Loaded {len(used_video_ids)} valid video IDs from cache (expired entries purged)")
             except Exception as e:
                 logger.warning(f"Could not load used video IDs: {e}")
+        
+        def _persist_cache():
+            """Write current used_video_ids to disk immediately."""
+            try:
+                with open(used_videos_file, "w") as f:
+                    for entry in valid_lines:
+                        f.write(f"{entry}\n")
+            except Exception as e:
+                logger.warning(f"Could not save used video IDs: {e}")
         
         async with aiohttp.ClientSession() as session:
             for i, scene in enumerate(scenes):
                 query = scene.get("visual_query", "civil engineering")
                 logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
                 
-                asset_url = await self._search_pexels(session, query, used_video_ids)
+                asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
                 
                 if not asset_url:
                     logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
-                    asset_url = await self._search_pixabay(session, query, used_video_ids)
+                    asset_url = await self._search_pixabay(session, query, used_video_ids, valid_lines)
                     
                 if asset_url:
                     local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
@@ -84,19 +109,12 @@ class VideoEngine:
                         file_size = os.path.getsize(local_path)
                         logger.info(f"Job {job_id}: Scene {i+1} downloaded ({file_size // 1024}KB)")
                         assets.append(local_path)
+                        # Persist cache after each successful download to prevent loss on crash
+                        _persist_cache()
                     else:
                         logger.warning(f"Job {job_id}: Scene {i+1} download failed")
                 else:
                     logger.warning(f"Job {job_id}: Scene {i+1} — no results from Pexels or Pixabay for '{query}'")
-        # Persist updated used video IDs
-        if used_video_ids:
-            try:
-                with open(used_videos_file, "w") as f:
-                    for vid_id in sorted(list(used_video_ids)):
-                        f.write(f"{vid_id}\n")
-                logger.info(f"Persisted {len(used_video_ids)} used video IDs to cache")
-            except Exception as e:
-                logger.warning(f"Could not save used video IDs: {e}")
         
         return assets
         
@@ -320,20 +338,39 @@ class VideoEngine:
             if not os.path.exists(tamil_font_path):
                 logger.info("Downloading Noto Sans Tamil font...")
                 import urllib.request
-                font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
-                urllib.request.urlretrieve(font_url, tamil_font_path)
+                tamil_font_urls = [
+                    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf",
+                    "https://github.com/google/fonts/raw/main/ofl/notosanstamil/NotoSansTamil%5Bwdth%2Cwght%5D.ttf",
+                    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf",
+                ]
+                for url in tamil_font_urls:
+                    try:
+                        urllib.request.urlretrieve(url, tamil_font_path)
+                        if os.path.exists(tamil_font_path) and os.path.getsize(tamil_font_path) > 1000:
+                            logger.info(f"Tamil font downloaded from {url.split('/')[2]}")
+                            break
+                    except Exception as fe:
+                        logger.warning(f"Font download failed from {url.split('/')[2]}: {fe}")
+                        continue
 
             # Also download Noto Sans Bold for Latin/English characters
             # (NotoSansTamil has no Latin glyphs — English words show as □ without this)
             if not os.path.exists(latin_font_path):
                 logger.info("Downloading Noto Sans (Latin fallback) font...")
                 import urllib.request
-                latin_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
-                try:
-                    urllib.request.urlretrieve(latin_url, latin_font_path)
-                    logger.info("Noto Sans (Latin) downloaded OK")
-                except Exception as le:
-                    logger.warning(f"Latin font download failed (non-fatal): {le}")
+                latin_font_urls = [
+                    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+                    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+                ]
+                for url in latin_font_urls:
+                    try:
+                        urllib.request.urlretrieve(url, latin_font_path)
+                        if os.path.exists(latin_font_path) and os.path.getsize(latin_font_path) > 1000:
+                            logger.info(f"Latin font downloaded from {url.split('/')[2]}")
+                            break
+                    except Exception as le:
+                        logger.warning(f"Latin font download failed from {url.split('/')[2]}: {le}")
+                        continue
 
             # Build a custom fonts.conf so FFmpeg/libass finds the Tamil font
             # without relying on the system fontconfig cache (which is unreliable on Kaggle)
@@ -383,13 +420,25 @@ class VideoEngine:
                 # Dynamic visual text overlay for high user retention
                 text_overlay = ""
                 if idx < len(scenes):
-                    text_overlay = scenes[idx].get("text_overlay", "").strip().upper()
+                    text_overlay = scenes[idx].get("text_overlay", "").strip()
                 
                 if text_overlay:
-                    text_esc = text_overlay.replace("'", "'\\\\''").replace(":", "\\:")
-                    font_rel = os.path.relpath(tamil_font_path).replace(chr(92), '/')
-                    drawtext_str = f",drawtext=fontfile='{font_rel}':text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
-                    logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (font: '{font_rel}')")
+                    import re as _re
+                    import platform
+                    is_windows = platform.system() == "Windows"
+                    contains_tamil = bool(_re.search(r'[\u0B80-\u0BFF]', text_overlay))
+                    text_esc = text_overlay.upper().replace("'", "'\\\\''").replace(":", "\\:")
+                    
+                    if is_windows:
+                        font_arg = "font='Nirmala UI'" if contains_tamil else "font='Arial'"
+                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Windows, {font_arg})")
+                    else:
+                        f_path = tamil_font_path if contains_tamil else latin_font_path
+                        font_rel = os.path.relpath(f_path).replace(chr(92), '/')
+                        font_arg = f"fontfile='{font_rel}'"
+                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Linux, font: '{font_rel}')")
+                        
+                    drawtext_str = f",drawtext={font_arg}:text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
                 else:
                     drawtext_str = ""
 
@@ -594,8 +643,12 @@ class VideoEngine:
                         text = " ".join(lines[2:]).replace("\n", "\\N")
                         ass_events.append((t_start, t_end, text))
 
-                    # ASS header: 1080x1920 (Shorts), MarginV=380 to appear ABOVE YouTube UI overlay
-                    # YouTube Shorts UI (channel/title/subscribe/nav) covers bottom ~300px on mobile
+                    # ASS header: OS-aware font configuration
+                    import platform
+                    is_windows = platform.system() == "Windows"
+                    tamil_font_name = "Nirmala UI" if is_windows else "Noto Sans Tamil"
+                    latin_font_name = "Arial" if is_windows else "Noto Sans"
+                    
                     ass_header = (
                         "[Script Info]\n"
                         "ScriptType: v4.00+\n"
@@ -608,8 +661,8 @@ class VideoEngine:
                         "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
                         "Alignment,MarginL,MarginR,MarginV,Encoding\n"
                         # Alignment=2 = bottom-center, MarginV=380 = 380px from bottom edge
-                        "Style: Default,Noto Sans Tamil,62,&H00FFFFFF,&H00FFFFFF,"
-                        "&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,380,1\n\n"
+                        f"Style: Default,{tamil_font_name},62,&H00FFFFFF,&H00FFFFFF,"
+                        f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,380,1\n\n"
                         "[Events]\n"
                         "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
                     )
@@ -617,15 +670,12 @@ class VideoEngine:
                     def _add_latin_font(text):
                         """Wrap Latin/English characters with ASS inline font override.
                         NotoSansTamil has NO Latin glyphs — they render as □ boxes.
-                        This switches to Noto Sans for English words, then back to Tamil.
+                        This switches to Noto Sans/Arial for English words, then back to Tamil.
                         """
                         import re as _re2
-                        has_latin_font = os.path.exists(latin_font_path)
-                        if not has_latin_font:
-                            return text  # no fallback font, leave as-is
                         result = _re2.sub(
                             r'[A-Za-z0-9][A-Za-z0-9\'\-\.\s]*[A-Za-z0-9]|[A-Za-z0-9]',
-                            lambda m: f"{{\\fnNoto Sans}}{m.group()}{{\\fnNoto Sans Tamil}}",
+                            lambda m: f"{{\\fn{latin_font_name}}}{m.group()}{{\\fn{tamil_font_name}}}",
                             text
                         )
                         return result
@@ -665,7 +715,7 @@ class VideoEngine:
                     sub_filter = (
                         f"subtitles='{srt_rel_esc}'"
                         f":fontsdir='{fonts_rel_esc}'"
-                        f":force_style='Fontname=Noto Sans Tamil,Fontsize=9,"
+                        f":force_style='Fontname={tamil_font_name},Fontsize=9,"
                         f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
                         f"BorderStyle=1,Outline=0.5,Shadow=0.5,"
                         f"MarginV=57,MarginL=10,MarginR=10,Alignment=2,Bold=1'"
@@ -749,7 +799,7 @@ class VideoEngine:
                             os.remove(f)
                         except Exception:
                             pass
-    async def _search_pexels(self, session, query, used_video_ids):
+    async def _search_pexels(self, session, query, used_video_ids, valid_lines):
         """Search Pexels API with technical fallbacks and orientation fallback (async)."""
         query = query.strip().lower()
         
@@ -784,9 +834,11 @@ class VideoEngine:
                             random.shuffle(videos_list)
                             
                             for video in videos_list:
-                                vid_id = video.get("id")
+                                vid_id = str(video.get("id", ""))
                                 if vid_id not in used_video_ids:
                                     used_video_ids.add(vid_id)
+                                    import time as _time
+                                    valid_lines.append(f"{vid_id}|{_time.time()}")
                                     video_files = video.get("video_files", [])
                                     # Find a reasonable quality file (not too large for free tier)
                                     for vf in video_files:
@@ -809,7 +861,7 @@ class VideoEngine:
         logger.warning(f"No Pexels results for '{query}' or fallbacks")
         return None
 
-    async def _search_pixabay(self, session, query, used_video_ids):
+    async def _search_pixabay(self, session, query, used_video_ids, valid_lines):
         """Search Pixabay API as secondary library fallback (async)."""
         api_key = getattr(settings, "PIXABAY_API_KEY", "")
         if not api_key:
@@ -841,7 +893,7 @@ class VideoEngine:
                         
                         # Attempt 1: Look for vertical/portrait videos first
                         for hit in hits:
-                            vid_id = hit.get("id")
+                            vid_id = str(hit.get("id", ""))
                             if vid_id not in used_video_ids:
                                 videos = hit.get("videos", {})
                                 size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
@@ -851,12 +903,14 @@ class VideoEngine:
                                     height = vid_info.get("height", 0)
                                     if height > width:  # Portrait video!
                                         used_video_ids.add(vid_id)
+                                        import time as _time
+                                        valid_lines.append(f"{vid_id}|{_time.time()}")
                                         logger.info(f"Pixabay match (portrait): '{q}' → video {vid_id} ({width}x{height})")
                                         return vid_info["url"]
                                         
                         # Attempt 2: Fallback to any orientation (cropped by FFmpeg)
                         for hit in hits:
-                            vid_id = hit.get("id")
+                            vid_id = str(hit.get("id", ""))
                             if vid_id not in used_video_ids:
                                 videos = hit.get("videos", {})
                                 size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
@@ -865,6 +919,8 @@ class VideoEngine:
                                     width = vid_info.get("width", 0)
                                     height = vid_info.get("height", 0)
                                     used_video_ids.add(vid_id)
+                                    import time as _time
+                                    valid_lines.append(f"{vid_id}|{_time.time()}")
                                     logger.info(f"Pixabay match (any): '{q}' → video {vid_id} ({width}x{height})")
                                     return vid_info["url"]
             except Exception as e:
@@ -924,29 +980,68 @@ class VideoEngine:
             # 3. Load font (downloading if missing)
             font_dir = os.path.join(settings.BASE_DIR, "assets", "fonts")
             os.makedirs(font_dir, exist_ok=True)
-            font_path = os.path.join(font_dir, "NotoSansTamil-Bold.ttf")
             
+            import re as _re
+            import platform
+            is_windows = platform.system() == "Windows"
+            contains_tamil = bool(_re.search(r'[\u0B80-\u0BFF]', text))
+            
+            font_file_name = "NotoSansTamil-Bold.ttf" if contains_tamil else "NotoSans-Bold.ttf"
+            font_path = os.path.join(font_dir, font_file_name)
+            
+            # Ensure the specific font is downloaded for non-Windows or fallback
             if not os.path.exists(font_path):
                 try:
                     import httpx
-                    logger.info("Downloading Noto Sans Tamil font for thumbnails...")
-                    font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
+                    logger.info(f"Downloading {font_file_name} for thumbnails...")
+                    if contains_tamil:
+                        font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
+                    else:
+                        font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
                     resp = httpx.get(font_url)
                     if resp.status_code == 200:
                         with open(font_path, "wb") as f:
                             f.write(resp.content)
                 except Exception as fe:
                     logger.warning(f"Failed to download font: {fe}")
-                        
-            # Fallback to default if load fails
+            
+            # Load the optimal font based on OS and language
             font = None
-            try:
-                font = ImageFont.truetype(font_path, size=80)
-            except Exception:
+            font_loaded = False
+            
+            if is_windows:
+                # Try system fonts first on Windows
+                win_font_file = "nirmala.ttf" if contains_tamil else "arialbd.ttf"
                 try:
-                    font = ImageFont.truetype("arial.ttf", size=80)
+                    font = ImageFont.truetype(win_font_file, size=80)
+                    font_loaded = True
+                    logger.info(f"Loaded Windows system font: {win_font_file}")
                 except Exception:
-                    font = ImageFont.load_default()
+                    pass
+            
+            if not font_loaded:
+                # Try downloaded font path
+                try:
+                    font = ImageFont.truetype(font_path, size=80)
+                    font_loaded = True
+                    logger.info(f"Loaded downloaded font: {font_file_name}")
+                except Exception:
+                    pass
+                    
+            if not font_loaded:
+                # Fallback to standard system fonts
+                for fn in ["nirmala.ttf", "latha.ttf", "arialbd.ttf", "arial.ttf", "cour.ttf"]:
+                    try:
+                        font = ImageFont.truetype(fn, size=80)
+                        font_loaded = True
+                        logger.info(f"Loaded fallback system font: {fn}")
+                        break
+                    except Exception:
+                        continue
+                        
+            if not font_loaded:
+                font = ImageFont.load_default()
+                logger.info("Loaded default fallback font")
                 
             # 4. Text wrap & formatting
             # Let's split text into lines to fit screen width

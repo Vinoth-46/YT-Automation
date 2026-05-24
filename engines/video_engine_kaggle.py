@@ -1,12 +1,9 @@
 """
 Video Engine — Kaggle-optimized variant.
 
-Differences from the Render version:
-  - Higher resolution: 720x1280 (vs 360x640 on Render)
-  - More threads: 2 (vs 1 on Render)
-  - Better CRF: 26 (vs 32-35 on Render)
-  - Longer timeouts: 600s (vs 180-300s on Render)
-  - No OOM worries with 13GB RAM
+Fully synced with the main video_engine.py.
+Uses the same resolution (1080x1920), features (text overlays, CC mode,
+thumbnail generation, Pixabay fallback, CTA images), and cache logic.
 """
 import os
 import logging
@@ -14,17 +11,17 @@ import asyncio
 import aiohttp
 import httpx
 import traceback
+import time
 from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# === Kaggle Quality Settings ===
-VIDEO_WIDTH = 720
-VIDEO_HEIGHT = 1280
-CRF_QUALITY = 26       # Much better quality (Render used 32-35)
-FFMPEG_THREADS = 2      # Kaggle has 4 cores, use 2
-PRESET = "medium"       # Better compression (Render used ultrafast)
-WATERMARK_SCALE = 120   # Larger watermark (Render used 80)
+# === Quality Settings (synced with main engine) ===
+VID_W, VID_H = 1080, 1920
+CRF = "28"
+PRESET = "medium"
+THREADS = "2"
+WM_SCALE = 150
 
 
 class VideoEngine:
@@ -51,37 +48,74 @@ class VideoEngine:
         logger.info(f"Job {job_id}: Gathered {len(scene_assets)} video assets, starting FFmpeg render")
 
         # 2. Final Render with FFmpeg
-        success = await self._render_ffmpeg(scene_assets, narration_path, output_path)
+        success = await self._render_ffmpeg(scene_assets, narration_path, output_path, script_data=script_data)
         
         if success and os.path.exists(output_path):
             file_size = os.path.getsize(output_path)
             logger.info(f"Job {job_id}: Video rendered successfully ({file_size // 1024}KB)")
+            
+            # Generate custom thumbnail
+            thumbnail_text = script_data.get("metadata", {}).get("thumbnail_text", "AVOID THIS MISTAKE")
+            thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
+            try:
+                self.generate_thumbnail(output_path, thumbnail_path, thumbnail_text)
+            except Exception as te:
+                logger.error(f"Job {job_id}: Failed to generate thumbnail: {te}")
+                
             return output_path
         else:
             logger.error(f"Job {job_id}: FFmpeg render failed or output file not found")
             return None
 
     async def _gather_assets(self, job_id, scenes):
-        """Fetch stock videos from Pexels (async)."""
+        """Fetch stock videos from Pexels and Pixabay (async)."""
         assets = []
         
-        # Load persistent used video IDs to avoid repetition across runs
+        # Load persistent used video IDs with expiry tracking
+        # Format: "video_id|timestamp" per line
         used_videos_file = os.path.join(settings.OUTPUT_DIR, "used_video_ids.txt")
         used_video_ids = set()
+        now = time.time()
+        max_age_seconds = 30 * 24 * 3600  # 30 days expiry
+        valid_lines = []
+        
         if os.path.exists(used_videos_file):
             try:
                 with open(used_videos_file, "r") as f:
-                    used_video_ids = set(line.strip() for line in f if line.strip())
-                logger.info(f"Loaded {len(used_video_ids)} historical used video IDs from cache")
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        parts = line.split("|", 1)
+                        vid_id = parts[0]
+                        ts = float(parts[1]) if len(parts) > 1 else 0
+                        if now - ts < max_age_seconds:
+                            used_video_ids.add(str(vid_id))
+                            valid_lines.append(f"{vid_id}|{ts}")
+                logger.info(f"Loaded {len(used_video_ids)} valid video IDs from cache (expired entries purged)")
             except Exception as e:
                 logger.warning(f"Could not load used video IDs: {e}")
+        
+        def _persist_cache():
+            """Write current used_video_ids to disk immediately."""
+            try:
+                with open(used_videos_file, "w") as f:
+                    for entry in valid_lines:
+                        f.write(f"{entry}\n")
+            except Exception as e:
+                logger.warning(f"Could not save used video IDs: {e}")
         
         async with aiohttp.ClientSession() as session:
             for i, scene in enumerate(scenes):
                 query = scene.get("visual_query", "civil engineering")
                 logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
                 
-                asset_url = await self._search_pexels(session, query, used_video_ids)
+                asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
+                
+                if not asset_url:
+                    logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
+                    asset_url = await self._search_pixabay(session, query, used_video_ids, valid_lines)
+                    
                 if asset_url:
                     local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                     downloaded = await self._download_file(session, asset_url, local_path)
@@ -89,82 +123,204 @@ class VideoEngine:
                         file_size = os.path.getsize(local_path)
                         logger.info(f"Job {job_id}: Scene {i+1} downloaded ({file_size // 1024}KB)")
                         assets.append(local_path)
+                        _persist_cache()
                     else:
                         logger.warning(f"Job {job_id}: Scene {i+1} download failed")
                 else:
-                    logger.warning(f"Job {job_id}: Scene {i+1} — no Pexels results for '{query}'")
-        # Persist updated used video IDs
-        if used_video_ids:
-            try:
-                with open(used_videos_file, "w") as f:
-                    for vid_id in sorted(list(used_video_ids)):
-                        f.write(f"{vid_id}\n")
-                logger.info(f"Persisted {len(used_video_ids)} used video IDs to cache")
-            except Exception as e:
-                logger.warning(f"Could not save used video IDs: {e}")
+                    logger.warning(f"Job {job_id}: Scene {i+1} — no results from Pexels or Pixabay for '{query}'")
         
         return assets
         
-    async def _generate_srt(self, audio_path, srt_path):
-        """Use Groq Whisper API to generate an SRT file with 1-word fast subtitles."""
+    async def _generate_srt(self, audio_path, srt_path, script_data=None):
+        """Generate subtitles using Groq Whisper API (primary) with Gemini alignment fallback.
+        
+        Using Groq Whisper with word-level timestamps ensures perfect synchronization.
+        """
+        # --- Method 1: Groq Whisper API (Highly accurate, word-level timestamps) ---
         groq_api_key = settings.GROQ_API_KEY
-        if not groq_api_key:
-            logger.warning("GROQ_API_KEY not found. Skipping dynamic subtitles.")
-            return False
-            
+        if groq_api_key:
+            try:
+                logger.info("Attempting transcription with Groq Whisper API...")
+                url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                headers = {"Authorization": f"Bearer {groq_api_key}"}
+                
+                with open(audio_path, "rb") as f:
+                    files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
+                    data = {
+                        "model": "whisper-large-v3",
+                        "response_format": "verbose_json",
+                        "timestamp_granularities[]": "word",
+                        "language": "ta"
+                    }
+                    
+                    async with httpx.AsyncClient() as client:
+                        resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
+                
+                if resp.status_code == 200:
+                    result = resp.json()
+                    words = result.get("words", [])
+                    if not words and "segments" in result:
+                        words = []
+                        for seg in result["segments"]:
+                            if "words" in seg:
+                                words.extend(seg["words"])
+                    
+                    if words:
+                        # Group words into 1-2 word clauses
+                        chunks = []
+                        current_chunk = []
+                        max_words = 2
+                        max_gap = 0.3
+                        max_duration = 1.0
+                        
+                        for w_data in words:
+                            word = w_data.get("word", "")
+                            start = w_data.get("start")
+                            end = w_data.get("end")
+                            
+                            if start is None or end is None:
+                                continue
+                                
+                            word_clean = word.strip()
+                            if not word_clean:
+                                continue
+                                
+                            if current_chunk:
+                                last_word = current_chunk[-1]
+                                gap = start - last_word.get("end", start)
+                                duration = end - current_chunk[0].get("start", start)
+                                last_word_clean = last_word.get("word", "").strip()
+                                has_punctuation = any(char in last_word_clean for char in [".", ",", "!", "?", "।"])
+                                
+                                if gap > max_gap or duration > max_duration or len(current_chunk) >= max_words or has_punctuation:
+                                    chunks.append(current_chunk)
+                                    current_chunk = []
+                                    
+                            current_chunk.append(w_data)
+                            
+                        if current_chunk:
+                            chunks.append(current_chunk)
+                            
+                        # Format SRT
+                        def format_time(seconds):
+                            ms = int((seconds % 1) * 1000)
+                            m, s = divmod(int(seconds), 60)
+                            h, m = divmod(m, 60)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                            
+                        with open(srt_path, "w", encoding="utf-8") as f:
+                            for idx, chunk in enumerate(chunks):
+                                start_str = format_time(chunk[0]["start"])
+                                end_str = format_time(chunk[-1]["end"])
+                                text_str = " ".join(w["word"].strip() for w in chunk)
+                                f.write(f"{idx+1}\n{start_str} --> {end_str}\n{text_str}\n\n")
+                                
+                        logger.info(f"Groq transcription complete. SRT with {len(chunks)} synchronized chunks saved to {srt_path}")
+                        return True
+                    else:
+                        logger.warning("Groq Whisper API returned no words in response.")
+                else:
+                    logger.warning(f"Groq Whisper API error (status {resp.status_code}): {resp.text}")
+            except Exception as e:
+                logger.error(f"Groq Whisper API call failed: {e}")
+                logger.error(traceback.format_exc())
+                
+        # --- Method 2: Gemini 1.5 Flash (Fallback) ---
         try:
-            url = "https://api.groq.com/openai/v1/audio/transcriptions"
-            headers = {"Authorization": f"Bearer {groq_api_key}"}
+            logger.info("Falling back to cloud transcription with Gemini 1.5 Flash...")
             
-            with open(audio_path, "rb") as f:
-                files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
-                data = {
-                    "model": "whisper-large-v3",
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word"
-                }
-                
-                async with httpx.AsyncClient() as client:
-                    resp = await client.post(url, headers=headers, files=files, data=data, timeout=60.0)
+            from google import genai
+            from google.genai import types
+            
+            api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
+            
+            prompt = (
+                "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
+                "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
+                "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
+                "Only return the SRT content, no extra text."
+            )
+
+            audio_file = None
+            client = None
+            last_error = None
+            
+            for i, key in enumerate(api_keys):
+                try:
+                    client = genai.Client(api_key=key, http_options={'api_version': 'v1beta'})
                     
-            if resp.status_code != 200:
-                logger.error(f"Groq API error: {resp.text}")
-                return False
-                
-            result = resp.json()
-            words = result.get("words", [])
-            
-            if not words:
-                logger.warning("Groq API returned no words.")
-                return False
-                
-            # Convert to SRT
-            def format_time(seconds):
-                ms = int((seconds % 1) * 1000)
-                m, s = divmod(int(seconds), 60)
-                h, m = divmod(m, 60)
-                return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
-                
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for i, word_data in enumerate(words):
-                    start = format_time(word_data["start"])
-                    end = format_time(word_data["end"])
-                    word = word_data["word"].strip()
-                    f.write(f"{i+1}\n{start} --> {end}\n{word}\n\n")
+                    logger.info(f"Uploading audio for transcription (Key #{i+1}): {os.path.basename(audio_path)}")
+                    with open(audio_path, 'rb') as f:
+                        audio_file = client.files.upload(file=f, config={'mime_type': 'audio/wav'})
                     
-            logger.info(f"Generated SRT with {len(words)} words.")
-            return True
-            
+                    while audio_file.state.name == "PROCESSING":
+                        import time as _time
+                        _time.sleep(2)
+                        audio_file = client.files.get(name=audio_file.name)
+                    
+                    if audio_file.state.name == "FAILED":
+                        logger.warning(f"Gemini audio processing failed with Key #{i+1}. Trying next key...")
+                        continue
+
+                    response = client.models.generate_content(
+                        model="models/gemini-flash-latest",
+                        contents=[audio_file, prompt],
+                        config=types.GenerateContentConfig(
+                            temperature=0.0,
+                            top_p=0.95,
+                            top_k=40,
+                        )
+                    )
+                    
+                    srt_content = response.text.strip()
+                    
+                    if srt_content.startswith("```"):
+                        lines = srt_content.split("\n")
+                        if len(lines) > 2:
+                            srt_content = "\n".join(lines[1:-1])
+                        else:
+                            srt_content = srt_content.replace("```srt", "").replace("```", "").strip()
+
+                    if not srt_content or "1" not in srt_content:
+                        logger.warning(f"Gemini returned invalid SRT with Key #{i+1}. Trying next key...")
+                        continue
+
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        f.write(srt_content)
+                        
+                    logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
+                    
+                    try:
+                        client.files.delete(name=audio_file.name)
+                    except:
+                        pass
+                        
+                    return True
+
+                except Exception as e:
+                    last_error = e
+                    error_str = str(e).lower()
+                    if "429" in error_str or "quota" in error_str or "key not valid" in error_str:
+                        logger.warning(f"Gemini Key #{i+1} failed ({error_str[:100]}). Rotating...")
+                        continue
+                    else:
+                        logger.error(f"Gemini Key #{i+1} unexpected error: {e}")
+                        continue
+
+            if last_error:
+                raise last_error
+            return False
+
         except Exception as e:
-            logger.error(f"Failed to generate SRT: {e}")
-            import traceback
+            logger.error(f"Gemini fallback transcription failed: {e}")
             logger.error(traceback.format_exc())
             return False
 
-    async def _render_ffmpeg(self, scene_paths, audio_path, output_path):
+    async def _render_ffmpeg(self, scene_paths, audio_path, output_path, script_data=None):
         """Standardize clips, concatenate, and sync with audio using FFmpeg.
         
-        Kaggle version: Higher resolution, better quality, more threads.
+        Fully synced with main video_engine.py: 1080x1920, text overlays, 
+        CC/baked subtitle mode, CTA images, Tamil font support.
         """
         job_id = os.path.basename(audio_path).split('_')[0]
         temp_dir = os.path.dirname(audio_path) or settings.TEMP_DIR
@@ -174,26 +330,121 @@ class VideoEngine:
         concat_output = None
         
         try:
-            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VIDEO_WIDTH}x{VIDEO_HEIGHT}...")
+            # Step 0: Ensure Tamil Font exists
+            fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
+            os.makedirs(fonts_dir, exist_ok=True)
+            tamil_font_path = os.path.join(fonts_dir, "NotoSansTamil-Bold.ttf")
+            latin_font_path = os.path.join(fonts_dir, "NotoSans-Bold.ttf")
+
+            if not os.path.exists(tamil_font_path):
+                logger.info("Downloading Noto Sans Tamil font...")
+                import urllib.request
+                tamil_font_urls = [
+                    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf",
+                    "https://github.com/google/fonts/raw/main/ofl/notosanstamil/NotoSansTamil%5Bwdth%2Cwght%5D.ttf",
+                    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf",
+                ]
+                for url in tamil_font_urls:
+                    try:
+                        urllib.request.urlretrieve(url, tamil_font_path)
+                        if os.path.exists(tamil_font_path) and os.path.getsize(tamil_font_path) > 1000:
+                            logger.info(f"Tamil font downloaded from {url.split('/')[2]}")
+                            break
+                    except Exception as fe:
+                        logger.warning(f"Font download failed from {url.split('/')[2]}: {fe}")
+                        continue
+
+            if not os.path.exists(latin_font_path):
+                logger.info("Downloading Noto Sans (Latin fallback) font...")
+                import urllib.request
+                latin_font_urls = [
+                    "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+                    "https://cdn.jsdelivr.net/gh/googlefonts/noto-fonts@main/hinted/ttf/NotoSans/NotoSans-Bold.ttf",
+                ]
+                for url in latin_font_urls:
+                    try:
+                        urllib.request.urlretrieve(url, latin_font_path)
+                        if os.path.exists(latin_font_path) and os.path.getsize(latin_font_path) > 1000:
+                            logger.info(f"Latin font downloaded from {url.split('/')[2]}")
+                            break
+                    except Exception as le:
+                        logger.warning(f"Latin font download failed from {url.split('/')[2]}: {le}")
+                        continue
+
+            # Build a custom fonts.conf
+            try:
+                import subprocess
+                fc_cache_dir = os.path.join(fonts_dir, "fc_cache")
+                os.makedirs(fc_cache_dir, exist_ok=True)
+                fonts_conf_path = os.path.join(fonts_dir, "fonts.conf")
+                fonts_conf_content = (
+                    '<?xml version="1.0"?>\n'
+                    '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">\n'
+                    '<fontconfig>\n'
+                    f'  <dir>{os.path.abspath(fonts_dir)}</dir>\n'
+                    f'  <cachedir>{os.path.abspath(fc_cache_dir)}</cachedir>\n'
+                    '  <match target="font">\n'
+                    '    <edit name="antialias" mode="assign"><bool>true</bool></edit>\n'
+                    '  </match>\n'
+                    '</fontconfig>\n'
+                )
+                with open(fonts_conf_path, 'w') as fconf:
+                    fconf.write(fonts_conf_content)
+                fc_env = os.environ.copy()
+                fc_env["FONTCONFIG_FILE"] = fonts_conf_path
+                result = subprocess.run(
+                    ["fc-cache", "-fv"], env=fc_env, check=False,
+                    capture_output=True, text=True
+                )
+                logger.info(f"Font cache ready. fc-cache: {result.stdout[-100:].strip()}")
+            except Exception as fe:
+                logger.warning(f"Font cache setup failed (non-fatal): {fe}")
+                fonts_conf_path = None
             
-            # Step 1: Pre-process each clip individually
+            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
+            
+            # Step 1: Pre-process each clip individually with text overlays
             watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
             has_watermark = os.path.exists(watermark_path)
             logger.info(f"Job {job_id}: Watermark found: {has_watermark} at {watermark_path}")
             
+            scenes = script_data.get("scenes", []) if script_data else []
+            
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
+                
+                # Dynamic visual text overlay for high user retention
+                text_overlay = ""
+                if idx < len(scenes):
+                    text_overlay = scenes[idx].get("text_overlay", "").strip()
+                
+                if text_overlay:
+                    import re as _re
+                    import platform
+                    is_windows = platform.system() == "Windows"
+                    contains_tamil = bool(_re.search(r'[\u0B80-\u0BFF]', text_overlay))
+                    text_esc = text_overlay.upper().replace("'", "'\\\\''").replace(":", "\\:")
+                    
+                    if is_windows:
+                        font_arg = "font='Nirmala UI'" if contains_tamil else "font='Arial'"
+                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Windows, {font_arg})")
+                    else:
+                        f_path = tamil_font_path if contains_tamil else latin_font_path
+                        font_rel = os.path.relpath(f_path).replace(chr(92), '/')
+                        font_arg = f"fontfile='{font_rel}'"
+                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Linux, font: '{font_rel}')")
+                        
+                    drawtext_str = f",drawtext={font_arg}:text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
+                else:
+                    drawtext_str = ""
+
                 if has_watermark:
                     cmd = [
                         "ffmpeg", "-y", "-i", p,
                         "-i", watermark_path,
-                        "-threads", str(FFMPEG_THREADS),
-                        "-filter_complex",
-                        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-                        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p[bg];"
-                        f"[1:v]scale={WATERMARK_SCALE}:-1[wm];"
-                        f"[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-threads", THREADS,
+                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         "-max_muxing_queue_size", "2048",
                         "-an",
                         processed_path
@@ -201,12 +452,9 @@ class VideoEngine:
                 else:
                     cmd = [
                         "ffmpeg", "-y", "-i", p,
-                        "-threads", str(FFMPEG_THREADS),
-                        "-vf", (
-                            f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-                            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p"
-                        ),
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-threads", THREADS,
+                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         "-max_muxing_queue_size", "2048",
                         "-an",
                         processed_path
@@ -235,7 +483,8 @@ class VideoEngine:
             concat_cmd = [
                 "ffmpeg", "-y", "-f", "concat", "-safe", "0",
                 "-i", concat_file,
-                "-c", "copy",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-r", "30", "-an",
                 concat_output
             ]
             
@@ -279,16 +528,16 @@ class VideoEngine:
                 files_to_clean.append(main_video_mp4)
                 
                 main_cmd = [
-                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-stream_loop", "-1", "-i", concat_output,
-                    "-t", str(main_duration), "-c:v", "copy",
+                    "-t", str(main_duration),
+                    "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
+                    "-pix_fmt", "yuv420p", "-r", "30",
                     main_video_mp4
                 ]
                 logger.info(f"FFmpeg: Trimming main video to {main_duration}s...")
-                proc_main = await asyncio.create_subprocess_exec(
-                    *main_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                _, stderr = await asyncio.wait_for(proc_main.communicate(), timeout=120)
+                proc_main = await asyncio.create_subprocess_exec(*main_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, stderr = await asyncio.wait_for(proc_main.communicate(), timeout=60)
                 if proc_main.returncode != 0:
                     logger.error(f"FFmpeg main trim failed: {stderr.decode()[-300:]}")
                 
@@ -297,50 +546,41 @@ class VideoEngine:
                 
                 if has_watermark:
                     cta_cmd = [
-                        "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
+                        "ffmpeg", "-y", "-threads", THREADS,
                         "-loop", "1", "-i", cta_image,
                         "-i", watermark_path,
-                        "-t", str(cta_duration),
-                        "-filter_complex",
-                        f"[0:v]scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-                        f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p[bg];"
-                        f"[1:v]scale={WATERMARK_SCALE}:-1[wm];"
-                        f"[bg][wm]overlay=W-w-10:10",
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
+                        "-t", str(cta_duration), 
+                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         cta_mp4
                     ]
                 else:
                     cta_cmd = [
-                        "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
+                        "ffmpeg", "-y", "-threads", THREADS,
                         "-loop", "1", "-i", cta_image,
-                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
-                        "-vf", (
-                            f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase,"
-                            f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},fps=30,format=yuv420p"
-                        ),
+                        "-t", str(cta_duration), "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p",
                         cta_mp4
                     ]
                 logger.info(f"FFmpeg: Generating CTA clip from {os.path.basename(cta_image)}...")
-                proc_cta = await asyncio.create_subprocess_exec(
-                    *cta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-                )
-                _, stderr = await asyncio.wait_for(proc_cta.communicate(), timeout=120)
+                proc_cta = await asyncio.create_subprocess_exec(*cta_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                _, stderr = await asyncio.wait_for(proc_cta.communicate(), timeout=60)
                 if proc_cta.returncode != 0:
                     logger.error(f"FFmpeg CTA generation failed: {stderr.decode()[-300:]}")
                 
                 with open(final_concat_list, "w") as f:
-                    f.write(f"file '{os.path.basename(main_video_mp4)}'\n")
-                    f.write(f"file '{os.path.basename(cta_mp4)}'\n")
+                    f.write(f"file '{os.path.abspath(main_video_mp4)}'\n")
+                    f.write(f"file '{os.path.abspath(cta_mp4)}'\n")
             else:
                 with open(final_concat_list, "w") as f:
-                    f.write(f"file '{os.path.basename(concat_output)}'\n")
+                    f.write(f"file '{os.path.abspath(concat_output)}'\n")
             
             # Step 3: Merge with audio + subtitles
             logger.info(f"FFmpeg: Merging final video with audio and subtitles...")
             srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
-            has_srt = await self._generate_srt(audio_path, srt_path)
+            has_srt = await self._generate_srt(audio_path, srt_path, script_data=script_data)
             if has_srt:
-                # Save a copy to outputs so it's ready for Closed Caption (CC) upload
+                # Save a copy to outputs for CC upload
                 final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
                 try:
                     import shutil
@@ -350,54 +590,181 @@ class VideoEngine:
                     logger.error(f"Failed to copy SRT to outputs: {se}")
                 files_to_clean.append(srt_path)
                 
-            safe_srt_path = srt_path.replace("\\", "/")
-            
+            # Convert SRT → ASS with explicit Tamil font style
+            ass_path = srt_path.replace(".srt", ".ass")
+            font_abs = os.path.abspath(tamil_font_path).replace("\\", "/")
+            srt_abs = os.path.abspath(srt_path)
+
             if has_srt and settings.SUBTITLE_MODE == "baked":
+                files_to_clean.append(ass_path)
+                try:
+                    import re as _re
+                    with open(srt_abs, "r", encoding="utf-8") as sf:
+                        srt_raw = sf.read()
+
+                    def srt_time_to_ass(t):
+                        t = t.replace(",", ".")
+                        if "." not in t:
+                            t += ".000"
+                        parts = t.split(":")
+                        if len(parts) == 2:
+                            h, m, rest = "0", parts[0], parts[1]
+                        elif len(parts) >= 3:
+                            h, m, rest = parts[0], parts[1], parts[2]
+                        else:
+                            h, m, rest = "0", "0", parts[0]
+                        s, ms = rest.split(".")
+                        cs = int(ms.ljust(3, '0')[:3]) // 10
+                        return f"{int(h)}:{m}:{s}.{cs:02d}"
+
+                    blocks = _re.split(r"\n{2,}", srt_raw.strip())
+                    ass_events = []
+                    for block in blocks:
+                        lines = block.strip().splitlines()
+                        if len(lines) < 3:
+                            continue
+                        times = lines[1].split(" --> ")
+                        if len(times) != 2:
+                            continue
+                        t_start = srt_time_to_ass(times[0].strip())
+                        t_end = srt_time_to_ass(times[1].strip())
+                        text = " ".join(lines[2:]).replace("\n", "\\N")
+                        ass_events.append((t_start, t_end, text))
+
+                    # ASS header: OS-aware font configuration
+                    import platform
+                    is_windows = platform.system() == "Windows"
+                    tamil_font_name = "Nirmala UI" if is_windows else "Noto Sans Tamil"
+                    latin_font_name = "Arial" if is_windows else "Noto Sans"
+                    
+                    ass_header = (
+                        "[Script Info]\n"
+                        "ScriptType: v4.00+\n"
+                        "PlayResX: 1080\n"
+                        "PlayResY: 1920\n"
+                        "ScaledBorderAndShadow: yes\n\n"
+                        "[V4+ Styles]\n"
+                        "Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,"
+                        "OutlineColour,BackColour,Bold,Italic,Underline,StrikeOut,"
+                        "ScaleX,ScaleY,Spacing,Angle,BorderStyle,Outline,Shadow,"
+                        "Alignment,MarginL,MarginR,MarginV,Encoding\n"
+                        # Alignment=2 = bottom-center, MarginV=380 = 380px from bottom edge
+                        f"Style: Default,{tamil_font_name},62,&H00FFFFFF,&H00FFFFFF,"
+                        f"&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,3,1,2,60,60,380,1\n\n"
+                        "[Events]\n"
+                        "Format: Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text\n"
+                    )
+
+                    def _add_latin_font(text):
+                        """Wrap Latin/English characters with ASS inline font override.
+                        NotoSansTamil has NO Latin glyphs — they render as □ boxes.
+                        This switches to Noto Sans/Arial for English words, then back to Tamil.
+                        """
+                        import re as _re2
+                        result = _re2.sub(
+                            r'[A-Za-z0-9][A-Za-z0-9\'\-\.\s]*[A-Za-z0-9]|[A-Za-z0-9]',
+                            lambda m: f"{{\\fn{latin_font_name}}}{m.group()}{{\\fn{tamil_font_name}}}",
+                            text
+                        )
+                        return result
+
+                    with open(ass_path, "w", encoding="utf-8") as af:
+                        af.write(ass_header)
+                        final_events = []
+                        for t_start, t_end, text in ass_events:
+                            tagged_text = _add_latin_font(text)
+                            final_events.append(f"Dialogue: 0,{t_start},{t_end},Default,,0,0,0,,{tagged_text}")
+                        af.write("\n".join(final_events))
+                    logger.info(f"SRT converted to ASS: {ass_path} ({len(ass_events)} lines)")
+                    use_ass = True
+                except Exception as ae:
+                    logger.warning(f"ASS conversion failed, falling back to SRT: {ae}")
+                    use_ass = False
+
+                env = os.environ.copy()
+                if fonts_conf_path and os.path.exists(fonts_conf_path):
+                    env["FONTCONFIG_FILE"] = fonts_conf_path
+                env["FONTCONFIG_PATH"] = os.path.abspath(fonts_dir)
+
+                if use_ass:
+                    ass_rel = os.path.relpath(ass_path).replace(chr(92), '/')
+                    fonts_rel = os.path.relpath(fonts_dir).replace(chr(92), '/')
+                    ass_rel_esc = ass_rel.replace("'", "'\\\\''")
+                    fonts_rel_esc = fonts_rel.replace("'", "'\\\\''")
+                    sub_filter = f"ass='{ass_rel_esc}':fontsdir='{fonts_rel_esc}'"
+                else:
+                    srt_rel = os.path.relpath(srt_path).replace(chr(92), '/')
+                    fonts_rel = os.path.relpath(fonts_dir).replace(chr(92), '/')
+                    srt_rel_esc = srt_rel.replace("'", "'\\\\''")
+                    fonts_rel_esc = fonts_rel.replace("'", "'\\\\''")
+                    sub_filter = (
+                        f"subtitles='{srt_rel_esc}'"
+                        f":fontsdir='{fonts_rel_esc}'"
+                        f":force_style='Fontname={tamil_font_name},Fontsize=9,"
+                        f"PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,"
+                        f"BorderStyle=1,Outline=0.5,Shadow=0.5,"
+                        f"MarginV=57,MarginL=10,MarginR=10,Alignment=2,Bold=1'"
+                    )
+
                 merge_cmd = [
-                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
-                    "-stream_loop", "-1" if not cta_image else "0",
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-vf", (
-                        f"subtitles={safe_srt_path}:force_style="
-                        f"'Fontname=Liberation Sans,Fontsize=18,PrimaryColour=&H0000FFFF,"
-                        f"OutlineColour=&H80000000,BorderStyle=3,Outline=1,Shadow=1,"
-                        f"MarginV=80,Alignment=2'"
-                    ),
-                    "-c:v", "libx264", "-preset", PRESET, "-crf", str(CRF_QUALITY),
-                    "-pix_fmt", "yuv420p",
-                    "-c:a", "aac", "-b:a", "192k",  # Better audio quality too
+                    "-vf", sub_filter,
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                    "-profile:v", "baseline", "-level", "3.0",
+                    "-pix_fmt", "yuv420p", "-r", "30",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
                 ]
+
+                logger.info(f"FFmpeg: Final merge with subtitles ({('ASS' if use_ass else 'SRT')})...")
+                process = await asyncio.create_subprocess_exec(
+                    *merge_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env=env
+                )
+                stdout, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=900)
+                stderr_text = stderr_bytes.decode(errors='replace')
+
+                for line in stderr_text.splitlines():
+                    ll = line.lower()
+                    if any(k in ll for k in ["font", "subtitle", "ass", "libass", "cannot", "error", "warn"]):
+                        logger.info(f"[FFmpeg-sub] {line.strip()}")
+
+                if process.returncode != 0:
+                    logger.error(f"FFmpeg final merge failed (code {process.returncode}): {stderr_text[-400:]}")
+                    raise Exception(f"Video rendering failed: {stderr_text[-200:]}")
             else:
+                # Clean video merge (CC mode or no subtitles)
                 merge_cmd = [
-                    "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
-                    "-stream_loop", "-1" if not cta_image else "0",
+                    "ffmpeg", "-y", "-threads", THREADS,
                     "-f", "concat", "-safe", "0",
                     "-i", final_concat_list,
                     "-i", audio_path,
-                    "-c:v", "copy",
-                    "-c:a", "aac", "-b:a", "192k",
+                    "-map", "0:v:0", "-map", "1:a:0",
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                    "-profile:v", "baseline", "-level", "3.0",
+                    "-pix_fmt", "yuv420p", "-r", "30",
+                    "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
                     "-movflags", "+faststart",
                     output_path
                 ]
-            
-            logger.info(f"FFmpeg: Final merge starting...")
-            process = await asyncio.create_subprocess_exec(
-                *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
-            
-            if process.returncode != 0:
-                logger.error(f"FFmpeg merge failed: {stderr.decode()[-500:]}")
-                if os.path.exists(output_path) and os.path.getsize(output_path) > 100 * 1024:
-                    return True
-                return False
-                
+                logger.info(f"FFmpeg: Final merge starting (no subtitles / CC mode)...")
+                process = await asyncio.create_subprocess_exec(
+                    *merge_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                _, stderr = await asyncio.wait_for(process.communicate(), timeout=600)
+                if process.returncode != 0:
+                    logger.error(f"FFmpeg no-srt merge failed: {stderr.decode()[-500:]}")
+                    return False
+
             return True
             
         except asyncio.TimeoutError:
@@ -417,15 +784,13 @@ class VideoEngine:
                         except Exception:
                             pass
 
-    async def _search_pexels(self, session, query, used_video_ids):
-        """Search Pexels API with technical fallbacks (async)."""
+    async def _search_pexels(self, session, query, used_video_ids, valid_lines):
+        """Search Pexels API with technical fallbacks and orientation fallback (async)."""
         query = query.strip().lower()
         
-        search_query = f"{query} construction engineering"
-        
         fallbacks = [
-            search_query,
-            f"construction {query}",
+            f"{query} construction",
+            f"{query}",
             "civil engineering construction",
             "building site"
         ]
@@ -433,43 +798,107 @@ class VideoEngine:
         headers = {"Authorization": self.pexels_api_key}
         
         for q in fallbacks:
-            url = f"https://api.pexels.com/videos/search?query={q}&per_page=15&orientation=portrait"
+            for orientation in ["portrait", "all"]:
+                url = f"https://api.pexels.com/videos/search?query={q}&per_page=50"
+                if orientation == "portrait":
+                    url += "&orientation=portrait"
+                
+                try:
+                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                        if response.status != 200:
+                            logger.warning(f"Pexels API returned {response.status} for '{q}' ({orientation})")
+                            continue
+                        
+                        data = await response.json()
+                        
+                        if data.get("videos"):
+                            import random
+                            videos_list = data["videos"]
+                            random.shuffle(videos_list)
+                            
+                            for video in videos_list:
+                                vid_id = str(video.get("id", ""))
+                                if vid_id not in used_video_ids:
+                                    used_video_ids.add(vid_id)
+                                    valid_lines.append(f"{vid_id}|{time.time()}")
+                                    video_files = video.get("video_files", [])
+                                    for vf in video_files:
+                                        width = vf.get("width", 0)
+                                        height = vf.get("height", 0)
+                                        if 720 <= width <= 1920 or 720 <= height <= 1920:
+                                            logger.info(f"Pexels match: '{q}' ({orientation}) → video {vid_id} ({width}p)")
+                                            return vf["link"]
+                                    if video_files:
+                                        smallest = min(video_files, key=lambda x: x.get("width", 9999))
+                                        logger.info(f"Pexels match (fallback smallest): '{q}' ({orientation}) → video {vid_id} ({smallest.get('width')}p)")
+                                        return smallest["link"]
+                except asyncio.TimeoutError:
+                    logger.warning(f"Pexels timeout for query '{q}' ({orientation})")
+                except Exception as e:
+                    logger.error(f"Pexels error for query '{q}' ({orientation}): {e}")
+                    
+        logger.warning(f"No Pexels results for '{query}' or fallbacks")
+        return None
+
+    async def _search_pixabay(self, session, query, used_video_ids, valid_lines):
+        """Search Pixabay API as secondary library fallback (async)."""
+        api_key = getattr(settings, "PIXABAY_API_KEY", "")
+        if not api_key:
+            return None
+            
+        query = query.strip().lower()
+        fallbacks = [
+            f"{query} construction",
+            f"{query}",
+            "civil engineering construction",
+            "building site"
+        ]
+        
+        for q in fallbacks:
+            url = f"https://pixabay.com/api/videos/?key={api_key}&q={q}&per_page=30"
             try:
-                async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
                     if response.status != 200:
-                        logger.warning(f"Pexels API returned {response.status} for '{q}'")
+                        logger.warning(f"Pixabay API returned {response.status} for '{q}'")
                         continue
                     
                     data = await response.json()
+                    hits = data.get("hits", [])
                     
-                    if data.get("videos"):
+                    if hits:
                         import random
-                        videos_list = data["videos"]
-                        random.shuffle(videos_list)
+                        random.shuffle(hits)
                         
-                        for video in videos_list:
-                            vid_id = video.get("id")
+                        for hit in hits:
+                            vid_id = str(hit.get("id", ""))
                             if vid_id not in used_video_ids:
-                                used_video_ids.add(vid_id)
-                                video_files = video.get("video_files", [])
-                                # On Kaggle we can afford HD quality
-                                for vf in video_files:
-                                    width = vf.get("width", 0)
-                                    height = vf.get("height", 0)
-                                    if 720 <= width <= 1080 or 720 <= height <= 1920:
-                                        logger.info(f"Pexels match: '{q}' → video {vid_id} ({width}p)")
-                                        return vf["link"]
-                                # Fallback
-                                if video_files:
-                                    smallest = min(video_files, key=lambda x: x.get("width", 9999))
-                                    logger.info(f"Pexels match (fallback): '{q}' → video {vid_id} ({smallest.get('width')}p)")
-                                    return smallest["link"]
-            except asyncio.TimeoutError:
-                logger.warning(f"Pexels timeout for query '{q}'")
+                                videos = hit.get("videos", {})
+                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                                if size_key in videos:
+                                    vid_info = videos[size_key]
+                                    width = vid_info.get("width", 0)
+                                    height = vid_info.get("height", 0)
+                                    if height > width:
+                                        used_video_ids.add(vid_id)
+                                        valid_lines.append(f"{vid_id}|{time.time()}")
+                                        logger.info(f"Pixabay match (portrait): '{q}' → video {vid_id} ({width}x{height})")
+                                        return vid_info["url"]
+                                        
+                        for hit in hits:
+                            vid_id = str(hit.get("id", ""))
+                            if vid_id not in used_video_ids:
+                                videos = hit.get("videos", {})
+                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                                if size_key in videos:
+                                    vid_info = videos[size_key]
+                                    used_video_ids.add(vid_id)
+                                    valid_lines.append(f"{vid_id}|{time.time()}")
+                                    logger.info(f"Pixabay match (any): '{q}' → video {vid_id}")
+                                    return vid_info["url"]
             except Exception as e:
-                logger.error(f"Pexels error for query '{q}': {e}")
+                logger.error(f"Pixabay error for query '{q}': {e}")
                 
-        logger.warning(f"No Pexels results for '{query}' or fallbacks")
+        logger.warning(f"No Pixabay results for '{query}' or fallbacks")
         return None
 
     async def _download_file(self, session, url, path):
@@ -492,4 +921,154 @@ class VideoEngine:
             return False
         except Exception as e:
             logger.error(f"Download failed: {e}")
+            return False
+
+    def generate_thumbnail(self, video_path, thumbnail_path, text):
+        """Generate a clickbaity thumbnail from the first second of the video with styled text."""
+        import subprocess
+        from PIL import Image, ImageDraw, ImageFont
+        
+        logger.info(f"Generating thumbnail for {video_path} with text: '{text}'")
+        try:
+            cmd = [
+                'ffmpeg', '-y', 
+                '-ss', '1.0', 
+                '-i', video_path, 
+                '-vframes', '1', 
+                thumbnail_path
+            ]
+            subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            
+            if not os.path.exists(thumbnail_path):
+                logger.error("FFmpeg failed to extract thumbnail frame.")
+                return False
+                
+            img = Image.open(thumbnail_path)
+            draw = ImageDraw.Draw(img)
+            width, height = img.size
+            
+            font_dir = os.path.join(settings.BASE_DIR, "assets", "fonts")
+            os.makedirs(font_dir, exist_ok=True)
+            
+            import re as _re
+            import platform
+            is_windows = platform.system() == "Windows"
+            contains_tamil = bool(_re.search(r'[\u0B80-\u0BFF]', text))
+            
+            font_file_name = "NotoSansTamil-Bold.ttf" if contains_tamil else "NotoSans-Bold.ttf"
+            font_path = os.path.join(font_dir, font_file_name)
+            
+            # Ensure the specific font is downloaded for non-Windows or fallback
+            if not os.path.exists(font_path):
+                try:
+                    import httpx
+                    logger.info(f"Downloading {font_file_name} for thumbnails...")
+                    if contains_tamil:
+                        font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSansTamil/NotoSansTamil-Bold.ttf"
+                    else:
+                        font_url = "https://github.com/googlefonts/noto-fonts/raw/main/hinted/ttf/NotoSans/NotoSans-Bold.ttf"
+                    resp = httpx.get(font_url)
+                    if resp.status_code == 200:
+                        with open(font_path, "wb") as f:
+                            f.write(resp.content)
+                except Exception as fe:
+                    logger.warning(f"Failed to download font: {fe}")
+            
+            # Load the optimal font based on OS and language
+            font = None
+            font_loaded = False
+            
+            if is_windows:
+                # Try system fonts first on Windows
+                win_font_file = "nirmala.ttf" if contains_tamil else "arialbd.ttf"
+                try:
+                    font = ImageFont.truetype(win_font_file, size=80)
+                    font_loaded = True
+                    logger.info(f"Loaded Windows system font: {win_font_file}")
+                except Exception:
+                    pass
+            
+            if not font_loaded:
+                # Try downloaded font path
+                try:
+                    font = ImageFont.truetype(font_path, size=80)
+                    font_loaded = True
+                    logger.info(f"Loaded downloaded font: {font_file_name}")
+                except Exception:
+                    pass
+                    
+            if not font_loaded:
+                # Fallback to standard system fonts
+                for fn in ["nirmala.ttf", "latha.ttf", "arialbd.ttf", "arial.ttf", "cour.ttf"]:
+                    try:
+                        font = ImageFont.truetype(fn, size=80)
+                        font_loaded = True
+                        logger.info(f"Loaded fallback system font: {fn}")
+                        break
+                    except Exception:
+                        continue
+                        
+            if not font_loaded:
+                font = ImageFont.load_default()
+                logger.info("Loaded default fallback font")
+                
+            words = text.upper().split()
+            lines = []
+            current_line = []
+            for word in words:
+                current_line.append(word)
+                line_str = " ".join(current_line)
+                bbox = draw.textbbox((0, 0), line_str, font=font)
+                line_width = bbox[2] - bbox[0]
+                if line_width > width * 0.85:
+                    if len(current_line) > 1:
+                        current_line.pop()
+                        lines.append(" ".join(current_line))
+                        current_line = [word]
+                    else:
+                        lines.append(" ".join(current_line))
+                        current_line = []
+            if current_line:
+                lines.append(" ".join(current_line))
+                
+            line_heights = []
+            for line in lines:
+                bbox = draw.textbbox((0, 0), line, font=font)
+                line_heights.append(bbox[3] - bbox[1])
+                
+            total_text_height = sum(line_heights) + (len(lines) - 1) * 20
+            y_start = (height - total_text_height) // 2
+            
+            banner_padding = 40
+            banner_top = y_start - banner_padding
+            banner_bottom = y_start + total_text_height + banner_padding
+            
+            overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+            overlay_draw = ImageDraw.Draw(overlay)
+            overlay_draw.rectangle(
+                [(0, banner_top), (width, banner_bottom)], 
+                fill=(0, 0, 0, 180)
+            )
+            
+            img = Image.alpha_composite(img.convert('RGBA'), overlay)
+            draw = ImageDraw.Draw(img)
+            
+            current_y = y_start
+            for i, line in enumerate(lines):
+                bbox = draw.textbbox((0, 0), line, font=font)
+                w = bbox[2] - bbox[0]
+                h = bbox[3] - bbox[1]
+                x = (width - w) // 2
+                
+                draw.text((x+4, current_y+4), line, font=font, fill=(0, 0, 0, 255))
+                text_color = (255, 223, 0, 255) if (i == 0 or i == len(lines)-1) else (255, 255, 255, 255)
+                draw.text((x, current_y), line, font=font, fill=text_color)
+                
+                current_y += h + 20
+                
+            img.convert('RGB').save(thumbnail_path, 'JPEG', quality=95)
+            logger.info(f"Custom thumbnail generated successfully at {thumbnail_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Thumbnail generation failed: {e}")
             return False

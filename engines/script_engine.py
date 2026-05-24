@@ -171,6 +171,38 @@ class ScriptEngine:
             text = re.search(r'\{.*\}', response_text, re.DOTALL).group()
             data = json.loads(text)
             
+            # === Post-validation: Enforce English title & description ===
+            metadata = data.get('script', {}).get('metadata', {})
+            title = metadata.get('title', '')
+            description = metadata.get('description', '')
+            
+            def _has_tamil(s):
+                """Check if string contains Tamil Unicode characters (U+0B80-U+0BFF)."""
+                return bool(re.search(r'[\u0B80-\u0BFF]', s))
+            
+            if _has_tamil(title) or _has_tamil(description):
+                logger.warning("Title or description contains Tamil text. Re-generating metadata in English...")
+                fix_prompt = (
+                    f"The following YouTube video metadata contains Tamil text. "
+                    f"Rewrite ONLY the title and description in ENGLISH. Keep the same meaning.\n\n"
+                    f"Current Title: {title}\n"
+                    f"Current Description: {description}\n\n"
+                    f"Output JSON ONLY: {{\"title\": \"...\", \"description\": \"...\"}}"
+                )
+                fix_response = await self._generate_content(fix_prompt)
+                if fix_response:
+                    try:
+                        fix_text = re.search(r'\{.*\}', fix_response, re.DOTALL).group()
+                        fix_data = json.loads(fix_text)
+                        if fix_data.get('title') and not _has_tamil(fix_data['title']):
+                            data['script']['metadata']['title'] = fix_data['title']
+                            logger.info(f"Fixed title to English: {fix_data['title']}")
+                        if fix_data.get('description') and not _has_tamil(fix_data['description']):
+                            data['script']['metadata']['description'] = fix_data['description']
+                            logger.info("Fixed description to English")
+                    except Exception as fe:
+                        logger.warning(f"English metadata fix parsing failed: {fe}")
+            
             # Perform similarity check on the combined output
             similarity_score = await self.calculate_similarity(data['script'].get("narration", ""))
             data['script']["similarity_score"] = similarity_score
@@ -266,11 +298,15 @@ class ScriptEngine:
             max_similarity = 0.0
             
             for past in past_scripts:
+                if not past.script_text:
+                    continue
                 old_words = set(re.findall(r'\w+', past.script_text.lower()))
                 intersection = new_words.intersection(old_words)
                 union = new_words.union(old_words)
                 sim = len(intersection) / len(union) if union else 0
                 max_similarity = max(max_similarity, sim)
+            
+            return max_similarity
                 
 if __name__ == "__main__":
     # Local Test Script

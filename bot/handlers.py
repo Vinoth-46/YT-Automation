@@ -434,10 +434,22 @@ async def _run_and_notify(job_id, chat_id, context):
             # Send a separate tap-to-copy metadata message for mobile convenience
             title = script.title if script else "Unknown Title"
             desc = script.description if script else "No Description"
+            
+            def _escape_md(text):
+                """Escape special characters for Telegram Markdown parse mode."""
+                if not text:
+                    return text
+                # For standard Markdown mode, escape problematic chars inside code blocks
+                # Replace backticks which break code blocks
+                return text.replace("`", "'").replace("*", "").replace("_", " ").replace("[", "(").replace("]", ")")
+            
+            safe_title = _escape_md(title)
+            safe_desc = _escape_md(desc)
+            
             metadata_message = (
                 f"📋 *YouTube Subtitles English Metadata* (Tap text to copy):\n\n"
-                f"🔹 *Title:*\n`{title}`\n\n"
-                f"🔹 *Description:*\n`{desc}`"
+                f"🔹 *Title:*\n`{safe_title}`\n\n"
+                f"🔹 *Description:*\n`{safe_desc}`"
             )
             try:
                 await context.bot.send_message(
@@ -446,7 +458,17 @@ async def _run_and_notify(job_id, chat_id, context):
                     parse_mode="Markdown"
                 )
             except Exception as me:
-                logger.warning(f"Could not send copy-paste metadata message: {me}")
+                # Fallback: send without formatting if Markdown still fails
+                logger.warning(f"Markdown metadata message failed: {me}. Sending plain text.")
+                try:
+                    plain_message = (
+                        f"📋 YouTube English Metadata (Tap to copy):\n\n"
+                        f"🔹 Title:\n{title}\n\n"
+                        f"🔹 Description:\n{desc}"
+                    )
+                    await context.bot.send_message(chat_id=chat_id, text=plain_message)
+                except Exception as pe:
+                    logger.error(f"Could not send metadata message at all: {pe}")
 
             await status_msg.delete()
         else:

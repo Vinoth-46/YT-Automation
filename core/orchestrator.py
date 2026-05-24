@@ -175,9 +175,10 @@ class Orchestrator:
             return False
 
     async def publish_video(self, job_id):
-        """Upload an approved video to YouTube."""
+        """Upload an approved video to YouTube with retry logic."""
         from engines.youtube_engine import YouTubeEngine
         from core.models import Channel, VideoAsset, ScriptAsset
+        import asyncio as _asyncio
         
         try:
             await self._update_job_state(job_id, JobState.UPLOADING)
@@ -213,22 +214,38 @@ class Orchestrator:
                 if not channel or not channel.oauth_tokens:
                     raise Exception("No YouTube channel linked or missing tokens. Run authentication first.")
 
-            # 3. Initialize Engine and Upload
+            # 3. Initialize Engine and Upload (with retry)
             yt_engine = YouTubeEngine(token_data=channel.oauth_tokens)
             
             # Save potentially refreshed tokens
             await yt_engine.save_credentials(channel.channel_id, channel.user_id)
 
-            video_id = yt_engine.upload_video(
-                file_path=video.draft_path,
-                title=script.title,
-                description=script.description,
-                tags=script.hashtags,
-                privacy_status="public"
-            )
+            # Upload with retry logic (3 attempts, exponential backoff)
+            video_id = None
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    video_id = yt_engine.upload_video(
+                        file_path=video.draft_path,
+                        title=script.title,
+                        description=script.description,
+                        tags=script.hashtags,
+                        privacy_status="public"
+                    )
+                    if video_id:
+                        break
+                except Exception as upload_err:
+                    if attempt < max_retries - 1:
+                        wait_time = (2 ** attempt) * 5  # 5s, 10s, 20s
+                        logger.warning(f"Upload attempt {attempt+1}/{max_retries} failed: {upload_err}. Retrying in {wait_time}s...")
+                        await _asyncio.sleep(wait_time)
+                        # Re-initialize engine in case of token expiry
+                        yt_engine = YouTubeEngine(token_data=channel.oauth_tokens)
+                    else:
+                        raise upload_err
 
             if not video_id:
-                raise Exception("YouTube upload returned no video ID")
+                raise Exception("YouTube upload returned no video ID after all retries")
 
             # Upload Closed Captions (CC) automatically if CC mode is enabled
             if settings.SUBTITLE_MODE == "cc":
@@ -251,28 +268,94 @@ class Orchestrator:
                 except Exception as te:
                     logger.error(f"Failed to upload thumbnail: {te}")
 
-            # 5. Post Pinned-style CTA Comment
+            # 5. Set Multi-Language Localizations (English + Tamil)
+            try:
+                yt_engine.set_video_localizations(
+                    video_id=video_id,
+                    localizations={
+                        "en": {
+                            "title": script.title or "",
+                            "description": script.description or ""
+                        },
+                        "ta": {
+                            "title": script.topic or script.title or "",
+                            "description": script.description or ""
+                        }
+                    }
+                )
+            except Exception as le:
+                logger.warning(f"Failed to set video localizations (non-fatal): {le}")
+
+            # 6. Post Bilingual CTA Comment (Tamil + English)
             comment_text = (
+                "🇮🇳 Tamil:\n"
                 "மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! "
-                "உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள்:\n"
+                "உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள்!\n\n"
+                "🌍 English:\n"
+                "Subscribe for more civil engineering tips! "
+                "Contact us for your dream home construction!\n\n"
                 "📞 Call/WhatsApp: +91 83440 51846\n"
                 "🌐 Website: https://kitchaas-enterprise.com/\n"
                 "📷 Instagram: https://www.instagram.com/nirmal.sunjaiy369"
             )
             try:
-                logger.info("Posting CTA comment to YouTube video...")
+                logger.info("Posting bilingual CTA comment to YouTube video...")
                 yt_engine.post_comment(video_id, comment_text)
             except Exception as ce:
                 logger.error(f"Failed to post CTA comment: {ce}")
 
             await self._update_job_state(job_id, JobState.UPLOADED)
             logger.info(f"Video {video_id} published for job {job_id}")
+            
+            # 7. Clean up old job files to prevent disk exhaustion
+            self._cleanup_old_outputs(job_id)
+            
             return video_id
 
         except Exception as e:
             logger.error(f"Publish failed for job {job_id}: {e}")
             await self._update_job_state(job_id, JobState.FAILED)
             raise e
+
+    def _cleanup_old_outputs(self, current_job_id, keep_last=5):
+        """Remove output files from old jobs, keeping only the last N jobs' files."""
+        import glob
+        try:
+            all_files = glob.glob(os.path.join(settings.OUTPUT_DIR, "*_final.*"))
+            all_files += glob.glob(os.path.join(settings.OUTPUT_DIR, "*_thumbnail.*"))
+            all_files += glob.glob(os.path.join(settings.OUTPUT_DIR, "*_narration.*"))
+            
+            # Extract unique job IDs from filenames
+            job_ids = set()
+            for f in all_files:
+                basename = os.path.basename(f)
+                parts = basename.split("_", 1)
+                if parts[0].isdigit():
+                    job_ids.add(int(parts[0]))
+            
+            # Sort and identify old jobs to delete (keep last N + current)
+            sorted_ids = sorted(job_ids, reverse=True)
+            ids_to_keep = set(sorted_ids[:keep_last])
+            try:
+                ids_to_keep.add(int(current_job_id))
+            except (ValueError, TypeError):
+                pass
+            
+            deleted_count = 0
+            for f in all_files:
+                basename = os.path.basename(f)
+                parts = basename.split("_", 1)
+                if parts[0].isdigit() and int(parts[0]) not in ids_to_keep:
+                    try:
+                        os.remove(f)
+                        deleted_count += 1
+                    except Exception:
+                        pass
+            
+            if deleted_count > 0:
+                logger.info(f"Disk cleanup: removed {deleted_count} files from old jobs (keeping last {keep_last})")
+        except Exception as e:
+            logger.warning(f"Disk cleanup failed (non-fatal): {e}")
 
     async def _update_job_state(self, job_id, state: JobState):
         """Helper to update job state in database."""
