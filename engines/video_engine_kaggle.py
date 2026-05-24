@@ -420,19 +420,16 @@ class VideoEngine:
                 
                 if text_overlay:
                     import re as _re
-                    import platform
-                    is_windows = platform.system() == "Windows"
                     contains_tamil = bool(_re.search(r'[\u0B80-\u0BFF]', text_overlay))
                     text_esc = text_overlay.upper().replace("'", "'\\\\''").replace(":", "\\:")
                     
-                    if is_windows:
-                        font_arg = "font='Nirmala UI'" if contains_tamil else "font='Arial'"
-                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Windows, {font_arg})")
-                    else:
-                        f_path = tamil_font_path if contains_tamil else latin_font_path
-                        font_rel = os.path.relpath(f_path).replace(chr(92), '/')
-                        font_arg = f"fontfile='{font_rel}'"
-                        logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (OS: Linux, font: '{font_rel}')")
+                    # Always use absolute, escaped paths for fontfile to completely bypass Fontconfig crashes on Windows
+                    f_path = tamil_font_path if contains_tamil else latin_font_path
+                    font_abs = os.path.abspath(f_path).replace("\\", "/")
+                    font_abs_esc = font_abs.replace(":", "\\:")
+                    
+                    font_arg = f"fontfile='{font_abs_esc}'"
+                    logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (font: '{font_abs_esc}')")
                         
                     drawtext_str = f",drawtext={font_arg}:text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
                 else:
