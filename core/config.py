@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     # App Config
     DEFAULT_LANGUAGE: str = "ta"
     SIMILARITY_THRESHOLD: float = 0.7
+    SUBTITLE_MODE: str = "cc"  # 'cc' for Closed Captions, 'baked' for hardcoded subtitles
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

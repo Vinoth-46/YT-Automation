@@ -147,6 +147,43 @@ class YouTubeEngine:
             logger.error(f"Failed to post comment to video {video_id}: {e}")
             return None
 
+    def upload_captions(self, video_id, srt_path, language="ta", name="Tamil Subtitles"):
+        """Upload caption/subtitle track to an existing YouTube video."""
+        if not self.youtube:
+            logger.error("YouTube client not initialized.")
+            return False
+            
+        try:
+            logger.info(f"Uploading caption track {srt_path} to video {video_id}...")
+            body = {
+                "snippet": {
+                    "videoId": video_id,
+                    "language": language,
+                    "name": name,
+                    "isDraft": False
+                }
+            }
+            media = MediaFileUpload(
+                srt_path,
+                mimetype="application/octet-stream",
+                resumable=True
+            )
+            request = self.youtube.captions().insert(
+                part="snippet",
+                body=body,
+                media_body=media
+            )
+            response = None
+            while response is None:
+                status, response = request.next_chunk()
+                if status:
+                    logger.info(f"Caption Upload Progress: {int(status.progress() * 100)}%")
+            logger.info(f"Caption uploaded successfully! Caption ID: {response.get('id')}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to upload caption: {e}")
+            return False
+
     @staticmethod
     def get_credentials_from_file():
         """Helper for OAuth2 flow (local/manual first run)."""

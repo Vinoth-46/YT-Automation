@@ -520,6 +520,14 @@ class VideoEngine:
             srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
             has_srt = await self._generate_srt(audio_path, srt_path, script_data=script_data)
             if has_srt:
+                # Save a copy to outputs so it's ready for Closed Caption (CC) upload
+                final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
+                try:
+                    import shutil
+                    shutil.copy(srt_path, final_srt_path)
+                    logger.info(f"Persisted SRT file to outputs: {final_srt_path}")
+                except Exception as se:
+                    logger.error(f"Failed to copy SRT to outputs: {se}")
                 files_to_clean.append(srt_path)
                 
             # Convert SRT → ASS with explicit Tamil font style baked in
@@ -528,7 +536,7 @@ class VideoEngine:
             font_abs = os.path.abspath(tamil_font_path).replace("\\", "/")
             srt_abs  = os.path.abspath(srt_path)
 
-            if has_srt:
+            if has_srt and settings.SUBTITLE_MODE == "baked":
                 files_to_clean.append(ass_path)
                 # Build ASS from SRT using Python (no external tool needed)
                 try:

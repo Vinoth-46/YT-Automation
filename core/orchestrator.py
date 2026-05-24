@@ -230,6 +230,18 @@ class Orchestrator:
             if not video_id:
                 raise Exception("YouTube upload returned no video ID")
 
+            # Upload Closed Captions (CC) automatically if CC mode is enabled
+            if settings.SUBTITLE_MODE == "cc":
+                final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
+                if os.path.exists(final_srt_path):
+                    try:
+                        logger.info("Automatically uploading Closed Captions (.srt) to YouTube...")
+                        yt_engine.upload_captions(video_id, final_srt_path, language="ta", name="Tamil Subtitles")
+                    except Exception as ce:
+                        logger.error(f"Failed to automatically upload captions: {ce}")
+                else:
+                    logger.warning(f"Closed Captions mode enabled, but SRT file was not found at {final_srt_path}")
+
             # 4. Upload Custom Thumbnail if exists
             thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
             if os.path.exists(thumbnail_path):

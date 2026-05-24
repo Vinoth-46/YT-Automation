@@ -321,11 +321,19 @@ class VideoEngine:
             srt_path = audio_path.replace(".wav", ".srt").replace(".mp3", ".srt")
             has_srt = await self._generate_srt(audio_path, srt_path)
             if has_srt:
+                # Save a copy to outputs so it's ready for Closed Caption (CC) upload
+                final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
+                try:
+                    import shutil
+                    shutil.copy(srt_path, final_srt_path)
+                    logger.info(f"Persisted SRT file to outputs: {final_srt_path}")
+                except Exception as se:
+                    logger.error(f"Failed to copy SRT to outputs: {se}")
                 files_to_clean.append(srt_path)
                 
             safe_srt_path = srt_path.replace("\\", "/")
             
-            if has_srt:
+            if has_srt and settings.SUBTITLE_MODE == "baked":
                 merge_cmd = [
                     "ffmpeg", "-y", "-threads", str(FFMPEG_THREADS),
                     "-stream_loop", "-1" if not cta_image else "0",
