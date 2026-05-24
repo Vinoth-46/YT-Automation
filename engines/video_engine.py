@@ -356,14 +356,30 @@ class VideoEngine:
             has_watermark = os.path.exists(watermark_path)
             logger.info(f"Job {job_id}: Watermark found: {has_watermark} at {watermark_path}")
             
+            scenes = script_data.get("scenes", []) if script_data else []
+            
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
+                
+                # Dynamic visual text overlay for high user retention
+                text_overlay = ""
+                if idx < len(scenes):
+                    text_overlay = scenes[idx].get("text_overlay", "").strip().upper()
+                
+                if text_overlay:
+                    text_esc = text_overlay.replace("'", "'\\\\''").replace(":", "\\:")
+                    font_rel = os.path.relpath(latin_font_path).replace(chr(92), '/')
+                    drawtext_str = f",drawtext=fontfile='{font_rel}':text='{text_esc}':fontcolor=yellow:fontsize=80:borderw=6:bordercolor=black:x=(w-text_w)/2:y=380"
+                    logger.info(f"Adding text overlay to scene {idx+1}: '{text_overlay}' (font: '{font_rel}')")
+                else:
+                    drawtext_str = ""
+
                 if has_watermark:
                     cmd = [
                         "ffmpeg", "-y", "-i", p,
                         "-i", watermark_path,
                         "-threads", THREADS,
-                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
+                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
                         "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         "-max_muxing_queue_size", "2048",
                         "-an",  # Strip audio
@@ -373,7 +389,7 @@ class VideoEngine:
                     cmd = [
                         "ffmpeg", "-y", "-i", p,
                         "-threads", THREADS,
-                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p",
+                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}",
                         "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         "-max_muxing_queue_size", "2048",
                         "-an",
