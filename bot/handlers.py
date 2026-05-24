@@ -430,6 +430,24 @@ async def _run_and_notify(job_id, chat_id, context):
                         await asyncio.sleep(retry_delay + 1)
                     else:
                         raise
+
+            # Send a separate tap-to-copy metadata message for mobile convenience
+            title = script.title if script else "Unknown Title"
+            desc = script.description if script else "No Description"
+            metadata_message = (
+                f"📋 *YouTube Subtitles English Metadata* (Tap text to copy):\n\n"
+                f"🔹 *Title:*\n`{title}`\n\n"
+                f"🔹 *Description:*\n`{desc}`"
+            )
+            try:
+                await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=metadata_message,
+                    parse_mode="Markdown"
+                )
+            except Exception as me:
+                logger.warning(f"Could not send copy-paste metadata message: {me}")
+
             await status_msg.delete()
         else:
             await status_msg.edit_text(f"❌ Job {job_id} failed. Use /status to check details.")
