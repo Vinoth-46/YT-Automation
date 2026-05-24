@@ -54,7 +54,17 @@ class VideoEngine:
     async def _gather_assets(self, job_id, scenes):
         """Fetch stock videos from Pexels and Pixabay (async)."""
         assets = []
+        
+        # Load persistent used video IDs to avoid repetition across runs
+        used_videos_file = os.path.join(settings.OUTPUT_DIR, "used_video_ids.txt")
         used_video_ids = set()
+        if os.path.exists(used_videos_file):
+            try:
+                with open(used_videos_file, "r") as f:
+                    used_video_ids = set(line.strip() for line in f if line.strip())
+                logger.info(f"Loaded {len(used_video_ids)} historical used video IDs from cache")
+            except Exception as e:
+                logger.warning(f"Could not load used video IDs: {e}")
         
         async with aiohttp.ClientSession() as session:
             for i, scene in enumerate(scenes):
@@ -78,6 +88,15 @@ class VideoEngine:
                         logger.warning(f"Job {job_id}: Scene {i+1} download failed")
                 else:
                     logger.warning(f"Job {job_id}: Scene {i+1} — no results from Pexels or Pixabay for '{query}'")
+        # Persist updated used video IDs
+        if used_video_ids:
+            try:
+                with open(used_videos_file, "w") as f:
+                    for vid_id in sorted(list(used_video_ids)):
+                        f.write(f"{vid_id}\n")
+                logger.info(f"Persisted {len(used_video_ids)} used video IDs to cache")
+            except Exception as e:
+                logger.warning(f"Could not save used video IDs: {e}")
         
         return assets
         
