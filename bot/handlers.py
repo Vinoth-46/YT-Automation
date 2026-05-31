@@ -285,48 +285,142 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         if query.data.startswith("approve_"):
             job_id = int(query.data.split("_")[1])
-            await query.edit_message_caption("🚀 Approving and starting YouTube upload...")
+            # Clear buttons and set status caption to prevent duplicate clicks
+            await query.edit_message_caption(
+                caption="🚀 Approving and starting YouTube upload... Please wait.",
+                reply_markup=None
+            )
             
             context.application.create_task(
-                _run_upload_and_notify(job_id, query.message.chat_id, context)
+                _run_upload_and_notify(job_id, query.message.chat_id, context, query)
             )
         elif query.data.startswith("regen_"):
             job_id = int(query.data.split("_")[1])
-            await query.edit_message_caption("🔄 Regenerating video...")
+            # Clear buttons and set status caption
+            await query.edit_message_caption(
+                caption="🔄 Video regeneration in progress... A new draft will be sent once rendered.",
+                reply_markup=None
+            )
             
-            from core.orchestrator import Orchestrator
-            orchestrator = Orchestrator()
             context.application.create_task(
                 _run_and_notify(job_id, query.message.chat_id, context)
             )
     except Exception as e:
         logger.error(f"Error in button_callback: {e}")
         try:
-            await query.edit_message_caption(f"❌ Error: {str(e)}")
+            await query.edit_message_caption(f"❌ Callback Error: {str(e)}")
         except:
             pass
 
 
-async def _run_upload_and_notify(job_id, chat_id, context):
-    """Run the upload and send confirmation."""
+async def _run_upload_and_notify(job_id, chat_id, context, query=None):
+    """Run the upload and send confirmation, updating Telegram message UI in-place."""
     try:
         from core.orchestrator import Orchestrator
         orchestrator = Orchestrator()
         video_id = await orchestrator.publish_video(job_id)
         
+        # Retrieve Script/Video metadata for updating the in-place caption
+        from sqlalchemy import select
+        from core.models import ScriptAsset, VideoAsset
+        Database = _get_db()
+        
+        topic = "Unknown"
+        originality = 0.0
+        file_size_kb = 0
+        
+        try:
+            async with Database.get_session() as session:
+                res_v = await session.execute(
+                    select(VideoAsset).where(VideoAsset.job_id == job_id)
+                    .order_by(VideoAsset.id.desc()).limit(1)
+                )
+                video = res_v.scalar_one_or_none()
+                
+                res_s = await session.execute(
+                    select(ScriptAsset).where(ScriptAsset.job_id == job_id)
+                    .order_by(ScriptAsset.id.desc()).limit(1)
+                )
+                script = res_s.scalar_one_or_none()
+                
+                if script:
+                    topic = script.topic or "Unknown"
+                    score = script.similarity_score if script.similarity_score is not None else 0.0
+                    originality = 1.0 - score
+                
+                if video and video.draft_path and os.path.exists(video.draft_path):
+                    file_size_kb = os.path.getsize(video.draft_path) // 1024
+        except Exception as dbe:
+            logger.warning(f"Failed to fetch metadata for caption update: {dbe}")
+        
         if video_id:
+            new_caption = (
+                f"✅ Video Approved & Published!\n\n"
+                f"📌 Topic: {topic}\n"
+                f"📊 Originality Score: {originality:.2f}\n"
+                f"📦 File Size: {file_size_kb}KB\n\n"
+                f"🔗 YouTube Link: https://youtu.be/{video_id}\n\n"
+                f"Video has been successfully posted to YouTube!"
+            )
+            keyboard = [
+                [InlineKeyboardButton("🔄 Regenerate / Post Again", callback_data=f"regen_{job_id}")]
+            ]
+            
+            if query:
+                try:
+                    await query.edit_message_caption(
+                        caption=new_caption,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                except Exception as qe:
+                    logger.warning(f"Could not edit original message caption: {qe}")
+            
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"✅ Video Uploaded Successfully!\n\nVideo ID: {video_id}\nURL: https://youtu.be/{video_id}\n\nStatus: Public (Live on YouTube)"
+                text=f"✅ Video Uploaded Successfully!\n\nURL: https://youtu.be/{video_id}\nStatus: Public (Live on YouTube)"
             )
         else:
+            new_caption = (
+                f"❌ YouTube Upload Failed\n\n"
+                f"📌 Topic: {topic}\n"
+                f"Please try again or check the server logs."
+            )
+            keyboard = [
+                [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
+                [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
+            ]
+            
+            if query:
+                try:
+                    await query.edit_message_caption(
+                        caption=new_caption,
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                except Exception as qe:
+                    logger.warning(f"Could not edit original message caption: {qe}")
+            
             await context.bot.send_message(
                 chat_id=chat_id,
-                text=f"❌ YouTube Upload Failed for Job {job_id}. Check logs for details."
+                text=f"❌ YouTube Upload Failed for Job {job_id}. Please review logs."
             )
     except Exception as e:
         logger.error(f"Error in _run_upload_and_notify: {e}")
         logger.error(traceback.format_exc())
+        
+        # Fallback keyboard restore on unhandled exception
+        try:
+            if query:
+                keyboard = [
+                    [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
+                    [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
+                ]
+                await query.edit_message_caption(
+                    caption=f"❌ Upload Error: {str(e)}",
+                    reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+        except Exception:
+            pass
+            
         await context.bot.send_message(chat_id=chat_id, text=f"❌ Upload error: {str(e)}")
 
 
@@ -396,14 +490,17 @@ async def _run_and_notify(job_id, chat_id, context):
             originality = 1.0 - score
             topic = script.topic if script else "Unknown"
             
-            is_uploaded = job.state.value == "uploaded" if job and job.state else False
+            from core.models import JobState
+            is_uploaded = job.state == JobState.UPLOADED if job and job.state else False
 
             if is_uploaded:
+                youtube_url = video.final_path or "https://youtu.be/Unknown"
                 caption = (
                     f"🚀 Video Published Automatically (Auto-Post)!\n\n"
                     f"📌 Topic: {topic}\n"
                     f"📊 Originality Score: {originality:.2f}\n"
                     f"📦 File Size: {file_size // 1024}KB\n\n"
+                    f"🔗 YouTube Link: {youtube_url}\n\n"
                     f"Video has been successfully posted to YouTube!"
                 )
                 keyboard = [

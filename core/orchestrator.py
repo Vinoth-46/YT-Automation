@@ -380,6 +380,17 @@ class Orchestrator:
             await self._update_job_state(job_id, JobState.UPLOADED)
             logger.info(f"Video {video_id} published for job {job_id}")
             
+            # Save the YouTube URL under VideoAsset.final_path
+            try:
+                async with Database.get_session() as session:
+                    await session.execute(
+                        update(VideoAsset).where(VideoAsset.job_id == job_id).values(final_path=f"https://youtu.be/{video_id}")
+                    )
+                    await session.commit()
+                logger.info(f"Saved YouTube URL for job {job_id} to final_path")
+            except Exception as dbe:
+                logger.error(f"Failed to update final_path in DB (non-fatal): {dbe}")
+
             # 7. Clean up old job files to prevent disk exhaustion
             self._cleanup_old_outputs(job_id)
             
