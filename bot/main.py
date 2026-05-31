@@ -67,7 +67,7 @@ async def setup_bot_commands(bot):
         BotCommand("start", "Start the bot and get welcome message"),
         BotCommand("generate", "Generate a new video now"),
         BotCommand("status", "Check recent job status"),
-        BotCommand("schedule", "Set daily posting time (UTC)"),
+        BotCommand("schedule", "Set daily posting time (IST)"),
         BotCommand("view_schedule", "View active schedules"),
         BotCommand("clearschedule", "Revoke/Clear all active schedules"),
         BotCommand("autopost", "Toggle auto-approval mode (on/off)"),
