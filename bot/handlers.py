@@ -356,7 +356,7 @@ async def _run_and_notify(job_id, chat_id, context):
             await status_msg.edit_text("📤 Sending video to Telegram...")
 
             from sqlalchemy import select
-            from core.models import ScriptAsset, VideoAsset
+            from core.models import ScriptAsset, VideoAsset, Job
             Database = _get_db()
 
             async with Database.get_session() as session:
@@ -372,6 +372,11 @@ async def _run_and_notify(job_id, chat_id, context):
                     .order_by(ScriptAsset.id.desc()).limit(1)
                 )
                 script = res_s.scalar_one_or_none()
+
+                res_j = await session.execute(
+                    select(Job).where(Job.id == job_id)
+                )
+                job = res_j.scalar_one_or_none()
 
             if not video:
                 await status_msg.edit_text("❌ Error: No video asset found in database")
@@ -390,18 +395,32 @@ async def _run_and_notify(job_id, chat_id, context):
             score = script.similarity_score if script and script.similarity_score is not None else 0.0
             originality = 1.0 - score
             topic = script.topic if script else "Unknown"
-            caption = (
-                f"✅ Video Draft Ready!\n\n"
-                f"📌 Topic: {topic}\n"
-                f"📊 Originality Score: {originality:.2f}\n"
-                f"📦 File Size: {file_size // 1024}KB\n\n"
-                f"What would you like to do?"
-            )
+            
+            is_uploaded = job.state.value == "uploaded" if job and job.state else False
 
-            keyboard = [
-                [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
-                [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
-            ]
+            if is_uploaded:
+                caption = (
+                    f"🚀 Video Published Automatically (Auto-Post)!\n\n"
+                    f"📌 Topic: {topic}\n"
+                    f"📊 Originality Score: {originality:.2f}\n"
+                    f"📦 File Size: {file_size // 1024}KB\n\n"
+                    f"Video has been successfully posted to YouTube!"
+                )
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Regenerate / Post Again", callback_data=f"regen_{job_id}")]
+                ]
+            else:
+                caption = (
+                    f"✅ Video Draft Ready!\n\n"
+                    f"📌 Topic: {topic}\n"
+                    f"📊 Originality Score: {originality:.2f}\n"
+                    f"📦 File Size: {file_size // 1024}KB\n\n"
+                    f"What would you like to do?"
+                )
+                keyboard = [
+                    [InlineKeyboardButton("🚀 Approve & Post to YouTube", callback_data=f"approve_{job_id}")],
+                    [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
+                ]
 
             import asyncio
             from telegram.error import RetryAfter, BadRequest

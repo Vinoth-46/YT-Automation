@@ -173,7 +173,16 @@ class Orchestrator:
                     )
                     job = res.scalar_one_or_none()
                     
+                    is_auto = False
                     if job and job.schedule and job.schedule.user.approval_mode == "auto":
+                        is_auto = True
+                    else:
+                        res_user = await session.execute(select(User).limit(1))
+                        first_user = res_user.scalar_one_or_none()
+                        if first_user and first_user.approval_mode == "auto":
+                            is_auto = True
+                            
+                    if is_auto:
                         await notify("🚀 Auto-Approval detected! Starting YouTube upload...")
                         await self.publish_video(job_id)
                         await notify("✅ Video automatically published to YouTube!")
