@@ -41,12 +41,11 @@ class ScriptEngine:
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # Using the experimental models from your specific quota list
         models_to_try = [
-            'models/gemini-flash-latest',   
-            'models/gemini-1.5-flash',      
-            'models/gemini-2.5-flash',      
-            'models/gemini-2.0-flash',      
-            'models/gemini-1.5-pro',        
-            'models/gemini-pro-latest'      
+            'gemini-2.5-flash',
+            'gemini-1.5-flash',
+            'gemini-2.0-flash',
+            'gemini-1.5-pro',
+            'gemini-2.5-pro'
         ]
         
         for model in models_to_try:
@@ -115,6 +114,12 @@ class ScriptEngine:
         prompt = (
             f"Role: Expert Civil Engineering Content Creator for YouTube Shorts.\n"
             f"Goal: Generate a unique topic AND a full 60-second script.\n\n"
+            f"🔴 CRITICAL TARGET AUDIENCE & LOCALIZATION: The target audience is strictly in India (specifically Tamil Nadu). "
+            f"The generated topic and script MUST be highly relevant to Indian house construction, Indian residential building practices, "
+            f"local Indian civil engineering hacks, local Indian building materials (e.g., M-sand vs river sand, red clay bricks, hollow blocks, Indian cement brands), "
+            f"hot Indian climate considerations, and Vastu Shastra (traditional Indian architecture). "
+            f"Do NOT generate content about foreign architectures (like Burj Khalifa, foreign suspension bridges, or US/European wooden frame houses). "
+            f"Focus on common concrete, brick, tiling, waterproofing, and structural tips for mid-sized Indian residential homes.\n\n"
             f"🔴 PREVIOUS TOPICS BLACKLIST (DO NOT REPEAT OR MIMIC THESE):\n"
             f"{history_text or 'None'}\n\n"
             f"BRANDING REQUIREMENTS (Kitchaa's Enterprises):\n"
@@ -128,9 +133,9 @@ class ScriptEngine:
             f"   - Technical Solution (42-45s): Transition to the actual concrete, actionable steps and how-to guides (e.g. sand bed depth, exact calculations) within the first 8-10 seconds of the video so viewers don't swipe away.\n"
             f"   - The TOTAL narration must be approximately 55-60 seconds long when spoken (around 130-150 words). \n"
             f"   - CRITICAL: The narration text MUST strictly end with this exact Tamil CTA sentence: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! உங்கள் கனவு இல்லத்திற்கு உடனே தொடர்பு கொள்ளுங்கள் - Kitchaa's Enterprises! முழு விவரங்கள் Description-ல் உள்ளது.'\n"
-            f"4. VISUALS & TEXT OVERLAYS: Exactly 6 scenes total. For each scene, generate:\n"
-            f"   - A 2-3 word English search keyword ('visual_query') for stock video search. Every query MUST contain a technical construction word (e.g., 'construction site', 'civil engineering', 'bridge work') to ensure Pexels doesn't return unrelated lifestyle footage.\n"
-            f"   - A highly engaging, bold, short 2-4 word English phrase ('text_overlay') to appear on screen as a key visual cue (e.g., 'CRITICAL STEP', 'USE SAND BED', 'MISTAKE!', 'DO NOT DO THIS', 'BIG SAVINGS'). This keeps both local and global dubbed audiences highly hooked even without sound.\n"
+            f"4. VISUALS & SCENES: Exactly 6 scenes total. For each scene, generate:\n"
+            f"   - An extremely specific, descriptive 2-4 word English search keyword ('visual_query') for stock video search that directly matches the specific scene topic to find highly relevant footage (e.g., 'Burj Khalifa Dubai', 'concrete pouring', 'waterproof paint coating', 'glass skyscraper facade'). Do NOT use generic keywords like 'construction site' if they are not relevant to the scene.\n"
+            f"   - A short helper visual description phrase ('text_overlay') in English (max 2-3 words, e.g. 'BURJ KHALIFA', 'FOUNDATION', 'GLASS CLADDING') to describe the visual context.\n"
             f"5. METADATA: Description MUST be generated strictly in English (not Tamil) and include Business Name, Contact, Website, Instagram, and all 4 services. Also, generate highly professional, clickable translations of the title and description in Hindi and Spanish to target North India and Global Spanish-speaking markets.\n"
             f"6. THUMBNAIL: Generate a simple, bold, high-click-through English text overlay for the thumbnail (max 3-4 words, capitalized, e.g. 'AVOID THIS MISTAKE', 'DON'T TILE YET', 'NEVER DO THIS'). DO NOT start the thumbnail text with 'STOP!'.\n"
             f"7. SEO HASHTAGS (CRITICAL for 1M+ views): Use your search grounding tool to query Google/YouTube for the current daily trending and viral hashtags for civil engineering, house construction, home building, and YouTube Shorts in Tamil Nadu and India. Mix the live trending search results with:\n"
@@ -223,10 +228,12 @@ class ScriptEngine:
 
 
     async def generate_topic(self, existing_topics=None):
-        """Generate a fresh civil engineering topic."""
+        """Generate a fresh civil engineering topic tailored for India."""
         prompt = (
             "Generate a unique and highly engaging civil engineering topic for a 120-second YouTube Short. "
-            "Focus on construction hacks, engineering marvels, or educational myths. "
+            "The topic MUST be strictly relevant to Indian residential house construction, Indian local building materials, "
+            "Indian structural hacks, and home building in India/Tamil Nadu. Focus on practical concrete, bricks, foundation, waterproofing, Vastu, or cost-saving tips. "
+            "Do NOT focus on foreign skyscrapers or wooden frame construction. "
             "Provide output in JSON ONLY: {'title_en': '...', 'title_ta': '...'}. "
             f"Avoid these existing topics: {existing_topics or 'None'}"
         )
@@ -261,10 +268,7 @@ class ScriptEngine:
             "{'narration': 'Full Tamil script here', "
             "'scenes': [{'visual_query': 'specific english search term for stock video'}], "
             "'metadata': {'title': '...', 'description': '...', 'tags': [...], 'thumbnail_text': '...'}} "
-            "Make sure 'visual_query' is a concise 2-3 word English keyword. "
-            "IMPORTANT: Every query MUST contain a technical construction word (e.g. 'construction site', 'civil engineering', 'bridge work') "
-            "to ensure Pexels doesn't return unrelated lifestyle footage (like people smoking or walking). "
-            "Avoid general words like 'woman', 'man', 'city', 'street' alone."
+            "Make sure 'visual_query' is a highly specific, descriptive 2-4 word English search keyword that directly matches the scene topic to find highly relevant footage (e.g. 'Burj Khalifa Dubai', 'concrete pouring', 'waterproof paint coating'). Avoid generic keywords and general words like 'woman', 'man', 'city', 'street' alone unless highly specific."
         )
 
         response_text = await self._generate_content(prompt)

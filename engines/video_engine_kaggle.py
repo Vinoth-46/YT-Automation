@@ -132,25 +132,23 @@ class VideoEngine:
         return assets
         
     async def _generate_srt(self, audio_path, srt_path, script_data=None):
-        """Generate subtitles using Groq Whisper API (primary) with Gemini alignment fallback.
+        """Generate English subtitles/translations using Groq Whisper API (primary) with Gemini fallback.
         
-        Using Groq Whisper with word-level timestamps ensures perfect synchronization.
+        Using Groq Whisper Translation translates Tamil audio narration natively to English.
         """
-        # --- Method 1: Groq Whisper API (Highly accurate, word-level timestamps) ---
+        # --- Method 1: Groq Whisper API (Highly accurate translation) ---
         groq_api_key = settings.GROQ_API_KEY
         if groq_api_key:
             try:
-                logger.info("Attempting transcription with Groq Whisper API...")
-                url = "https://api.groq.com/openai/v1/audio/transcriptions"
+                logger.info("Attempting translation with Groq Whisper API...")
+                url = "https://api.groq.com/openai/v1/audio/translations"
                 headers = {"Authorization": f"Bearer {groq_api_key}"}
                 
                 with open(audio_path, "rb") as f:
                     files = {"file": (os.path.basename(audio_path), f, "audio/wav")}
                     data = {
                         "model": "whisper-large-v3",
-                        "response_format": "verbose_json",
-                        "timestamp_granularities[]": "word",
-                        "language": "ta"
+                        "response_format": "verbose_json"
                     }
                     
                     async with httpx.AsyncClient() as client:
@@ -215,19 +213,47 @@ class VideoEngine:
                                 text_str = " ".join(w["word"].strip() for w in chunk)
                                 f.write(f"{idx+1}\n{start_str} --> {end_str}\n{text_str}\n\n")
                                 
-                        logger.info(f"Groq transcription complete. SRT with {len(chunks)} synchronized chunks saved to {srt_path}")
+                        logger.info(f"Groq transcription/translation complete. SRT with {len(chunks)} synchronized chunks saved to {srt_path}")
+                        return True
+                    elif "segments" in result:
+                        # Fallback to segment-level translation output (normal for translation endpoint)
+                        chunks = []
+                        for seg in result["segments"]:
+                            start = seg.get("start")
+                            end = seg.get("end")
+                            text = seg.get("text", "").strip()
+                            if start is not None and end is not None and text:
+                                chunks.append({
+                                    "start": start,
+                                    "end": end,
+                                    "text": text
+                                })
+                                
+                        def format_time(seconds):
+                            ms = int((seconds % 1) * 1000)
+                            m, s = divmod(int(seconds), 60)
+                            h, m = divmod(m, 60)
+                            return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+                            
+                        with open(srt_path, "w", encoding="utf-8") as f:
+                            for idx, chunk in enumerate(chunks):
+                                start_str = format_time(chunk["start"])
+                                end_str = format_time(chunk["end"])
+                                f.write(f"{idx+1}\n{start_str} --> {end_str}\n{chunk['text']}\n\n")
+                                
+                        logger.info(f"Groq translation complete. SRT with {len(chunks)} translated segments saved to {srt_path}")
                         return True
                     else:
-                        logger.warning("Groq Whisper API returned no words in response.")
+                        logger.warning("Groq Whisper Translation API returned no translation in response.")
                 else:
-                    logger.warning(f"Groq Whisper API error (status {resp.status_code}): {resp.text}")
+                    logger.warning(f"Groq Whisper Translation API error (status {resp.status_code}): {resp.text}")
             except Exception as e:
-                logger.error(f"Groq Whisper API call failed: {e}")
+                logger.error(f"Groq Whisper Translation API call failed: {e}")
                 logger.error(traceback.format_exc())
                 
-        # --- Method 2: Gemini 1.5 Flash (Fallback) ---
+        # --- Method 2: Gemini 2.5 Flash (Fallback translation) ---
         try:
-            logger.info("Falling back to cloud transcription with Gemini 1.5 Flash...")
+            logger.info("Falling back to cloud translation with Gemini 2.5 Flash...")
             
             from google import genai
             from google.genai import types
@@ -235,8 +261,8 @@ class VideoEngine:
             api_keys = [k.strip() for k in settings.GEMINI_API_KEY.split(",") if k.strip()]
             
             prompt = (
-                "Listen to this Tamil audio narration and provide a precise transcription in SRT (SubRip) format. "
-                "Each caption should be 1-3 words long for fast-paced YouTube Shorts. "
+                "Listen to this Tamil audio narration, translate it into English, and provide a precise English translation in SRT (SubRip) format. "
+                "Each caption should be 3-5 words long for fast-paced YouTube Shorts. "
                 "Ensure timestamps are exact (format: HH:MM:SS,mmm). "
                 "Only return the SRT content, no extra text."
             )
@@ -247,9 +273,9 @@ class VideoEngine:
             
             for i, key in enumerate(api_keys):
                 try:
-                    client = genai.Client(api_key=key, http_options={'api_version': 'v1beta'})
+                    client = genai.Client(api_key=key)
                     
-                    logger.info(f"Uploading audio for transcription (Key #{i+1}): {os.path.basename(audio_path)}")
+                    logger.info(f"Uploading audio for translation (Key #{i+1}): {os.path.basename(audio_path)}")
                     with open(audio_path, 'rb') as f:
                         audio_file = client.files.upload(file=f, config={'mime_type': 'audio/wav'})
                     
@@ -263,7 +289,7 @@ class VideoEngine:
                         continue
 
                     response = client.models.generate_content(
-                        model="models/gemini-flash-latest",
+                        model="gemini-2.5-flash",
                         contents=[audio_file, prompt],
                         config=types.GenerateContentConfig(
                             temperature=0.0,
@@ -288,7 +314,7 @@ class VideoEngine:
                     with open(srt_path, "w", encoding="utf-8") as f:
                         f.write(srt_content)
                         
-                    logger.info(f"Cloud transcription complete. SRT saved to {srt_path}")
+                    logger.info(f"Cloud translation complete. SRT saved to {srt_path}")
                     
                     try:
                         client.files.delete(name=audio_file.name)
@@ -413,10 +439,8 @@ class VideoEngine:
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 
-                # Dynamic visual text overlay for high user retention
+                # Text overlays are completely disabled per user request
                 text_overlay = ""
-                if idx < len(scenes):
-                    text_overlay = scenes[idx].get("text_overlay", "").strip()
                 
                 if text_overlay:
                     import re as _re
