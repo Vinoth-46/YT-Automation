@@ -211,11 +211,17 @@ class YouTubeEngine:
             existing_localizations = video_data.get("localizations", {})
             existing_localizations.update(localizations)
             
-            # Update with merged localizations
+            snippet = video_data["snippet"]
+            # Ensure the snippet has a default language set so the YouTube API accepts localizations
+            if not snippet.get("defaultLanguage"):
+                snippet["defaultLanguage"] = "ta"
+            
+            # Update with merged localizations and snippet containing defaultLanguage
             self.youtube.videos().update(
-                part="localizations",
+                part="snippet,localizations",
                 body={
                     "id": video_id,
+                    "snippet": snippet,
                     "localizations": existing_localizations
                 }
             ).execute()
