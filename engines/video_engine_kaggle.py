@@ -116,7 +116,7 @@ class VideoEngine:
                 
                 if source == "youtube":
                     logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — Searching YouTube for '{query}' directly...")
-                    downloaded_success = await self._search_youtube_and_download(query, local_path, duration=10)
+                    downloaded_success = await self._search_youtube_and_download(query, local_path, scene_index=i, duration=10)
                 else:
                     # Default: Pexels -> Pixabay -> YouTube as ultimate fallback
                     logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
@@ -132,7 +132,7 @@ class VideoEngine:
                     # If both stock APIs failed, try YouTube as ultimate fallback
                     if not downloaded_success:
                         logger.info(f"Job {job_id}: Scene {i+1} — Pexels/Pixabay failed. Trying YouTube fallback...")
-                        downloaded_success = await self._search_youtube_and_download(query, local_path, duration=10)
+                        downloaded_success = await self._search_youtube_and_download(query, local_path, scene_index=i, duration=10)
                 
                 if downloaded_success and os.path.exists(local_path):
                     file_size = os.path.getsize(local_path)
@@ -935,85 +935,111 @@ class VideoEngine:
         logger.warning(f"No Pixabay results for '{query}' or fallbacks")
         return None
 
-    async def _search_youtube_and_download(self, query, local_path, duration=10):
-        """Search YouTube for Creative Commons civil engineering/construction clips and download using yt-dlp."""
+    async def _search_youtube_and_download(self, query, local_path, scene_index=0, duration=10):
+        """Search YouTube for civil engineering/construction clips with fallbacks and dynamic cut offsets."""
         import sys
         
-        # Mix in search keywords to find highly relevant real-world footage
-        search_query = f"{query} civil engineering house building construction creative commons"
-        logger.info(f"Searching YouTube with query: '{search_query}'")
+        # We vary the search index based on the scene_index to guarantee DIFFERENT clips if we fall back
+        search_idx = (scene_index % 5) + 1  # 1 to 5
         
-        temp_full_path = local_path.replace(".mp4", "_full.mp4")
-        
-        # We download format 22 (720p MP4 progressive) or 18 (360p MP4 progressive) to bypass HLS and avoid 403 blocks
-        cmd = [
-            "yt-dlp",
-            f"ytsearch1:{search_query}",
-            "--no-playlist",
-            "--match-filter", "duration < 600",  # limit search to videos under 10 minutes to save bandwidth/disk
-            "-f", "22/18",
-            "-o", temp_full_path,
-            "--no-update",
-            "--extractor-args", "youtube:player_client=default"
+        # Build search fallbacks ranked from highly specific to generic
+        fallbacks = [
+            f"{query} construction",
+            f"{query}",
+            "indian residential house building construction",
+            "civil engineering concrete foundation construction"
         ]
         
-        try:
-            logger.info(f"Running yt-dlp: {' '.join(cmd)}")
-            process = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE
-            )
-            stdout, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=120)
+        for q in fallbacks:
+            # We use ytsearchN where N is search_idx to get a unique result for each scene
+            search_query = f"ytsearch{search_idx}:{q}"
+            logger.info(f"Trying YouTube search fallback for Scene {scene_index+1}: '{search_query}'")
             
-            if process.returncode == 0 and os.path.exists(temp_full_path) and os.path.getsize(temp_full_path) > 0:
-                file_size = os.path.getsize(temp_full_path)
-                logger.info(f"YouTube download succeeded: {temp_full_path} ({file_size // 1024}KB)")
-                
-                # Extract a duration-second slice from the downloaded video using FFmpeg
-                # We start at 3 seconds in to bypass intros/black frames, or 0 if video is very short
-                cut_cmd = [
-                    "ffmpeg", "-y",
-                    "-ss", "00:00:03",
-                    "-i", temp_full_path,
-                    "-t", str(duration),
-                    "-c", "copy",  # stream copy is fast and avoids quality loss at this stage
-                    local_path
-                ]
-                logger.info(f"Cutting clip using FFmpeg: {' '.join(cut_cmd)}")
-                cut_process = await asyncio.create_subprocess_exec(
-                    *cut_cmd,
+            temp_full_path = local_path.replace(".mp4", "_full.mp4")
+            
+            cmd = [
+                "yt-dlp",
+                search_query,
+                "--no-playlist",
+                "--match-filter", "duration < 600",  # limit search to videos under 10 minutes to save bandwidth/disk
+                "-f", "22/18",
+                "-o", temp_full_path,
+                "--no-update",
+                "--extractor-args", "youtube:player_client=default"
+            ]
+            
+            try:
+                logger.info(f"Running yt-dlp: {' '.join(cmd)}")
+                process = await asyncio.create_subprocess_exec(
+                    *cmd,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE
                 )
-                await asyncio.wait_for(cut_process.communicate(), timeout=30)
+                stdout, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=60)
                 
-                # Clean up the large downloaded full video
+                if process.returncode == 0 and os.path.exists(temp_full_path) and os.path.getsize(temp_full_path) > 0:
+                    file_size = os.path.getsize(temp_full_path)
+                    logger.info(f"YouTube download succeeded for '{q}': {temp_full_path} ({file_size // 1024}KB)")
+                    
+                    # Extract a duration-second slice from the downloaded video using FFmpeg
+                    # We vary the start time based on scene_index to get different parts of the video
+                    start_sec = 3 + (scene_index * 2)  # Scene 0: 3s, Scene 1: 5s, Scene 2: 7s, etc.
+                    
+                    # Get video duration first to make sure we don't start past the end of a short video
+                    probe_cmd = [
+                        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                        "-of", "default=noprint_wrappers=1:nokey=1", temp_full_path
+                    ]
+                    probe_process = await asyncio.create_subprocess_exec(*probe_cmd, stdout=asyncio.subprocess.PIPE)
+                    p_stdout, _ = await asyncio.wait_for(probe_process.communicate(), timeout=15)
+                    try:
+                        vid_dur = float(p_stdout.decode().strip())
+                        if start_sec + duration > vid_dur:
+                            start_sec = max(0, int(vid_dur - duration - 1))
+                    except:
+                        start_sec = 2
+                        
+                    start_str = f"00:00:{start_sec:02d}"
+                    
+                    cut_cmd = [
+                        "ffmpeg", "-y",
+                        "-ss", start_str,
+                        "-i", temp_full_path,
+                        "-t", str(duration),
+                        "-c", "copy",  # stream copy is fast and avoids quality loss
+                        local_path
+                    ]
+                    logger.info(f"Cutting clip using FFmpeg: {' '.join(cut_cmd)}")
+                    cut_process = await asyncio.create_subprocess_exec(
+                        *cut_cmd,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE
+                    )
+                    await asyncio.wait_for(cut_process.communicate(), timeout=30)
+                    
+                    # Clean up the large downloaded full video
+                    if os.path.exists(temp_full_path):
+                        try:
+                            os.remove(temp_full_path)
+                        except:
+                            pass
+                    
+                    if cut_process.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                        logger.info(f"Successfully cut YouTube clip to {duration}s: {local_path}")
+                        return True
+                    else:
+                        logger.warning("FFmpeg cut failed, using full downloaded video instead as fallback")
+                        os.rename(temp_full_path, local_path)
+                        return True
+            except Exception as e:
+                logger.error(f"YouTube search/download exception for query '{q}': {e}")
+                logger.error(traceback.format_exc())
                 if os.path.exists(temp_full_path):
                     try:
                         os.remove(temp_full_path)
                     except:
                         pass
-                
-                if cut_process.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
-                    logger.info(f"Successfully cut YouTube clip to {duration}s: {local_path}")
-                    return True
-                else:
-                    logger.warning("FFmpeg cut failed, using full downloaded video instead as fallback")
-                    os.rename(temp_full_path, local_path)
-                    return True
-            else:
-                stderr_text = stderr_bytes.decode(errors='replace') if 'stderr_bytes' in locals() else ""
-                logger.warning(f"yt-dlp search/download failed: {stderr_text[-300:]}")
-        except Exception as e:
-            logger.error(f"YouTube search/download exception: {e}")
-            logger.error(traceback.format_exc())
-            if os.path.exists(temp_full_path):
-                try:
-                    os.remove(temp_full_path)
-                except:
-                    pass
-                    
+                        
         return False
 
     async def _download_file(self, session, url, path):
