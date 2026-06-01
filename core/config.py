@@ -48,6 +48,7 @@ class Settings(BaseSettings):
     DEFAULT_LANGUAGE: str = "ta"
     SIMILARITY_THRESHOLD: float = 0.7
     SUBTITLE_MODE: str = "baked"  # 'cc' for Closed Captions, 'baked' for hardcoded subtitles
+    VIDEO_SOURCE: str = "pexels"  # 'pexels' for Stock, 'youtube' for YouTube Search
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

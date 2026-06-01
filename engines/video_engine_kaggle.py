@@ -68,7 +68,7 @@ class VideoEngine:
             return None
 
     async def _gather_assets(self, job_id, scenes):
-        """Fetch stock videos from Pexels and Pixabay (async)."""
+        """Fetch stock videos from Pexels/Pixabay or YouTube with full fallbacks (async)."""
         assets = []
         
         # Load persistent used video IDs with expiry tracking
@@ -108,26 +108,39 @@ class VideoEngine:
         async with aiohttp.ClientSession() as session:
             for i, scene in enumerate(scenes):
                 query = scene.get("visual_query", "civil engineering")
-                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
+                local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                 
-                asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
+                # Check video source configuration
+                source = getattr(settings, "VIDEO_SOURCE", "pexels").lower()
+                downloaded_success = False
                 
-                if not asset_url:
-                    logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
-                    asset_url = await self._search_pixabay(session, query, used_video_ids, valid_lines)
-                    
-                if asset_url:
-                    local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
-                    downloaded = await self._download_file(session, asset_url, local_path)
-                    if downloaded and os.path.exists(local_path):
-                        file_size = os.path.getsize(local_path)
-                        logger.info(f"Job {job_id}: Scene {i+1} downloaded ({file_size // 1024}KB)")
-                        assets.append(local_path)
-                        _persist_cache()
-                    else:
-                        logger.warning(f"Job {job_id}: Scene {i+1} download failed")
+                if source == "youtube":
+                    logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — Searching YouTube for '{query}' directly...")
+                    downloaded_success = await self._search_youtube_and_download(query, local_path, duration=10)
                 else:
-                    logger.warning(f"Job {job_id}: Scene {i+1} — no results from Pexels or Pixabay for '{query}'")
+                    # Default: Pexels -> Pixabay -> YouTube as ultimate fallback
+                    logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
+                    asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
+                    
+                    if not asset_url:
+                        logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
+                        asset_url = await self._search_pixabay(session, query, used_video_ids, valid_lines)
+                        
+                    if asset_url:
+                        downloaded_success = await self._download_file(session, asset_url, local_path)
+                    
+                    # If both stock APIs failed, try YouTube as ultimate fallback
+                    if not downloaded_success:
+                        logger.info(f"Job {job_id}: Scene {i+1} — Pexels/Pixabay failed. Trying YouTube fallback...")
+                        downloaded_success = await self._search_youtube_and_download(query, local_path, duration=10)
+                
+                if downloaded_success and os.path.exists(local_path):
+                    file_size = os.path.getsize(local_path)
+                    logger.info(f"Job {job_id}: Scene {i+1} gathered successfully ({file_size // 1024}KB)")
+                    assets.append(local_path)
+                    _persist_cache()
+                else:
+                    logger.warning(f"Job {job_id}: Scene {i+1} gathering failed completely")
         
         return assets
         
@@ -921,6 +934,87 @@ class VideoEngine:
                 
         logger.warning(f"No Pixabay results for '{query}' or fallbacks")
         return None
+
+    async def _search_youtube_and_download(self, query, local_path, duration=10):
+        """Search YouTube for Creative Commons civil engineering/construction clips and download using yt-dlp."""
+        import sys
+        
+        # Mix in search keywords to find highly relevant real-world footage
+        search_query = f"{query} civil engineering house building construction creative commons"
+        logger.info(f"Searching YouTube with query: '{search_query}'")
+        
+        temp_full_path = local_path.replace(".mp4", "_full.mp4")
+        
+        # We download format 22 (720p MP4 progressive) or 18 (360p MP4 progressive) to bypass HLS and avoid 403 blocks
+        cmd = [
+            "yt-dlp",
+            f"ytsearch1:{search_query}",
+            "--no-playlist",
+            "--match-filter", "duration < 600",  # limit search to videos under 10 minutes to save bandwidth/disk
+            "-f", "22/18",
+            "-o", temp_full_path,
+            "--no-update",
+            "--extractor-args", "youtube:player_client=default"
+        ]
+        
+        try:
+            logger.info(f"Running yt-dlp: {' '.join(cmd)}")
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE
+            )
+            stdout, stderr_bytes = await asyncio.wait_for(process.communicate(), timeout=120)
+            
+            if process.returncode == 0 and os.path.exists(temp_full_path) and os.path.getsize(temp_full_path) > 0:
+                file_size = os.path.getsize(temp_full_path)
+                logger.info(f"YouTube download succeeded: {temp_full_path} ({file_size // 1024}KB)")
+                
+                # Extract a duration-second slice from the downloaded video using FFmpeg
+                # We start at 3 seconds in to bypass intros/black frames, or 0 if video is very short
+                cut_cmd = [
+                    "ffmpeg", "-y",
+                    "-ss", "00:00:03",
+                    "-i", temp_full_path,
+                    "-t", str(duration),
+                    "-c", "copy",  # stream copy is fast and avoids quality loss at this stage
+                    local_path
+                ]
+                logger.info(f"Cutting clip using FFmpeg: {' '.join(cut_cmd)}")
+                cut_process = await asyncio.create_subprocess_exec(
+                    *cut_cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                await asyncio.wait_for(cut_process.communicate(), timeout=30)
+                
+                # Clean up the large downloaded full video
+                if os.path.exists(temp_full_path):
+                    try:
+                        os.remove(temp_full_path)
+                    except:
+                        pass
+                
+                if cut_process.returncode == 0 and os.path.exists(local_path) and os.path.getsize(local_path) > 0:
+                    logger.info(f"Successfully cut YouTube clip to {duration}s: {local_path}")
+                    return True
+                else:
+                    logger.warning("FFmpeg cut failed, using full downloaded video instead as fallback")
+                    os.rename(temp_full_path, local_path)
+                    return True
+            else:
+                stderr_text = stderr_bytes.decode(errors='replace') if 'stderr_bytes' in locals() else ""
+                logger.warning(f"yt-dlp search/download failed: {stderr_text[-300:]}")
+        except Exception as e:
+            logger.error(f"YouTube search/download exception: {e}")
+            logger.error(traceback.format_exc())
+            if os.path.exists(temp_full_path):
+                try:
+                    os.remove(temp_full_path)
+                except:
+                    pass
+                    
+        return False
 
     async def _download_file(self, session, url, path):
         """Download asset locally (async with progress)."""
