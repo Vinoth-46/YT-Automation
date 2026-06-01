@@ -21,7 +21,7 @@ class ScriptEngine:
             http_options={'api_version': 'v1beta'}
         )
         # Setting default model to a stable text version
-        self.model_name = 'gemini-1.5-flash'
+        self.model_name = 'gemini-2.5-flash'
         logger.info(f"Initialized ScriptEngine with {len(self.api_keys)} keys. Primary model: {self.model_name} (API v1beta)")
 
     def _rotate_key(self):
@@ -41,11 +41,11 @@ class ScriptEngine:
         """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
         # Using the experimental models from your specific quota list
         models_to_try = [
-            'gemini-2.5-flash',
-            'gemini-1.5-flash',
-            'gemini-2.0-flash',
-            'gemini-1.5-pro',
-            'gemini-2.5-pro'
+            'gemini-2.5-flash',           # Primary: fast and capable
+            'gemini-2.0-flash',           # Fallback 1: stable and fast
+            'gemini-2.5-flash-preview-05-20',  # Fallback 2: latest preview build
+            'gemini-2.0-flash-lite',      # Fallback 3: lightweight, rarely rate-limited
+            'gemini-2.5-pro'              # Fallback 4: most capable but heavy quota usage
         ]
         
         for model in models_to_try:
