@@ -340,7 +340,7 @@ class VideoEngine:
         
         # === Kaggle Quality Settings (31GB RAM available) ===
         VID_W, VID_H = 1080, 1920
-        CRF = "28"
+        CRF = "23"
         PRESET = "medium"
         THREADS = "2"
         WM_SCALE = 150
@@ -746,7 +746,7 @@ class VideoEngine:
                     "-vf", sub_filter,
                     "-map", "0:v:0", "-map", "1:a:0",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                    "-profile:v", "baseline", "-level", "3.0",
+                    "-profile:v", "high", "-level", "4.1",
                     "-pix_fmt", "yuv420p", "-r", "30",
                     "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
@@ -782,7 +782,7 @@ class VideoEngine:
                     "-i", audio_path,
                     "-map", "0:v:0", "-map", "1:a:0",
                     "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                    "-profile:v", "baseline", "-level", "3.0",
+                    "-profile:v", "high", "-level", "4.1",
                     "-pix_fmt", "yuv420p", "-r", "30",
                     "-c:a", "aac", "-b:a", "192k", "-ar", "44100",
                     "-shortest",
@@ -978,7 +978,7 @@ class VideoEngine:
             # 1. Extract frame at 1.0 second using FFmpeg
             cmd = [
                 'ffmpeg', '-y', 
-                '-ss', '1.0', 
+                '-ss', '3.0', 
                 '-i', video_path, 
                 '-vframes', '1', 
                 thumbnail_path
@@ -1030,7 +1030,7 @@ class VideoEngine:
                 # Try system fonts first on Windows
                 win_font_file = "nirmala.ttf" if contains_tamil else "arialbd.ttf"
                 try:
-                    font = ImageFont.truetype(win_font_file, size=80)
+                    font = ImageFont.truetype(win_font_file, size=120)
                     font_loaded = True
                     logger.info(f"Loaded Windows system font: {win_font_file}")
                 except Exception:
@@ -1039,7 +1039,7 @@ class VideoEngine:
             if not font_loaded:
                 # Try downloaded font path
                 try:
-                    font = ImageFont.truetype(font_path, size=80)
+                    font = ImageFont.truetype(font_path, size=120)
                     font_loaded = True
                     logger.info(f"Loaded downloaded font: {font_file_name}")
                 except Exception:
@@ -1049,7 +1049,7 @@ class VideoEngine:
                 # Fallback to standard system fonts
                 for fn in ["nirmala.ttf", "latha.ttf", "arialbd.ttf", "arial.ttf", "cour.ttf"]:
                     try:
-                        font = ImageFont.truetype(fn, size=80)
+                        font = ImageFont.truetype(fn, size=120)
                         font_loaded = True
                         logger.info(f"Loaded fallback system font: {fn}")
                         break

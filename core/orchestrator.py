@@ -81,22 +81,39 @@ class Orchestrator:
             spanish_title = metadata.get("spanish_title", "")
             spanish_desc = metadata.get("spanish_description", "")
 
-            # Combine them in a structured way for the DB description field
+            # Store CLEAN English description only (no Hindi/Spanish dumps)
+            # Translations are handled separately via YouTube Localizations API
             combined_desc = eng_desc
-            if hindi_title or hindi_desc or spanish_title or spanish_desc:
-                combined_desc += "\n\n--- HINDI TRANSLATION ---\n"
-                combined_desc += f"TITLE: {hindi_title}\n"
-                combined_desc += f"DESC: {hindi_desc}\n"
-                combined_desc += "\n--- SPANISH TRANSLATION ---\n"
-                combined_desc += f"TITLE: {spanish_title}\n"
-                combined_desc += f"DESC: {spanish_desc}\n"
+            
+            # Store translations in script_data for use during publish_video localizations
+            # (they'll be read from the DB description field using a JSON suffix)
+            localization_data = {}
+            # Save Tamil title from AI topic generation (used for Tamil localization)
+            tamil_title = topic_data.get("title_ta", "")
+            if tamil_title:
+                localization_data["tamil_title"] = tamil_title
+            if hindi_title:
+                localization_data["hindi_title"] = hindi_title
+            if hindi_desc:
+                localization_data["hindi_description"] = hindi_desc
+            if spanish_title:
+                localization_data["spanish_title"] = spanish_title
+            if spanish_desc:
+                localization_data["spanish_description"] = spanish_desc
+            
+            # Append localization JSON as a hidden block at the end of description
+            # (parsed during publish, never shown to viewers because it's after the fold)
+            if localization_data:
+                import json as _json
+                combined_desc += "\n\n" + "<!-- LOCALIZATIONS: " + _json.dumps(localization_data) + " -->"
 
             async with Database.get_session() as session:
                 script_asset = ScriptAsset(
                     job_id=job_id,
                     topic=topic_data.get("title_en"),
                     script_text=script_data.get("narration"),
-                    title=metadata.get("title"),
+                    # Format title: "English Title #தமிழ் #CivilEngineering"
+                    title=metadata.get("title", "") + " #தமிழ் #CivilEngineering",
                     description=combined_desc,
                     hashtags=metadata.get("tags"),
                     thumbnail_text=metadata.get("thumbnail_text", "AVOID THIS MISTAKE"),
@@ -247,6 +264,11 @@ class Orchestrator:
             # Save potentially refreshed tokens
             await yt_engine.save_credentials(channel.channel_id, channel.user_id)
 
+            # Strip hidden localization block from description before upload
+            clean_description = script.description or ""
+            if "<!-- LOCALIZATIONS:" in clean_description:
+                clean_description = clean_description[:clean_description.index("<!-- LOCALIZATIONS:")].strip()
+
             # Upload with retry logic (3 attempts, exponential backoff)
             video_id = None
             max_retries = 3
@@ -255,7 +277,7 @@ class Orchestrator:
                     video_id = yt_engine.upload_video(
                         file_path=video.draft_path,
                         title=script.title,
-                        description=script.description,
+                        description=clean_description,
                         tags=script.hashtags,
                         privacy_status="public"
                     )
@@ -274,17 +296,17 @@ class Orchestrator:
             if not video_id:
                 raise Exception("YouTube upload returned no video ID after all retries")
 
-            # Upload Closed Captions (CC) automatically if CC mode is enabled
-            if settings.SUBTITLE_MODE == "cc":
-                final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
-                if os.path.exists(final_srt_path):
-                    try:
-                        logger.info("Automatically uploading Closed Captions (.srt) to YouTube...")
-                        yt_engine.upload_captions(video_id, final_srt_path, language="ta", name="Tamil Subtitles")
-                    except Exception as ce:
-                        logger.error(f"Failed to automatically upload captions: {ce}")
-                else:
-                    logger.warning(f"Closed Captions mode enabled, but SRT file was not found at {final_srt_path}")
+            # Upload Closed Captions (CC) — ALWAYS upload for YouTube SEO
+            # (even in 'baked' mode, CC gives YouTube text to index for search/recommendations)
+            final_srt_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_final.srt")
+            if os.path.exists(final_srt_path):
+                try:
+                    logger.info("Uploading Closed Captions (.srt) to YouTube for SEO indexing...")
+                    yt_engine.upload_captions(video_id, final_srt_path, language="ta", name="Tamil Subtitles")
+                except Exception as ce:
+                    logger.error(f"Failed to upload captions: {ce}")
+            else:
+                logger.warning(f"SRT file not found at {final_srt_path} — no CC uploaded")
 
             # 4. Upload Custom Thumbnail if exists
             thumbnail_path = os.path.join(settings.OUTPUT_DIR, f"{job_id}_thumbnail.jpg")
@@ -299,6 +321,7 @@ class Orchestrator:
             try:
                 desc = script.description or ""
                 eng_desc = desc
+                tamil_title = ""
                 hindi_title = ""
                 hindi_desc = ""
                 spanish_title = ""
@@ -330,6 +353,22 @@ class Orchestrator:
                             spanish_title = s_title_match.group(1).strip()
                         if s_desc_match:
                             spanish_desc = s_desc_match.group(1).strip()
+                elif "<!-- LOCALIZATIONS:" in desc:
+                    # New format: parse JSON from hidden comment block
+                    import json as _json
+                    loc_match = re.search(r'<!-- LOCALIZATIONS: (.*?) -->', desc, re.DOTALL)
+                    if loc_match:
+                        try:
+                            loc_data = _json.loads(loc_match.group(1))
+                            tamil_title = loc_data.get("tamil_title", "")
+                            hindi_title = loc_data.get("hindi_title", "")
+                            hindi_desc = loc_data.get("hindi_description", "")
+                            spanish_title = loc_data.get("spanish_title", "")
+                            spanish_desc = loc_data.get("spanish_description", "")
+                            # Clean eng_desc by removing the hidden block
+                            eng_desc = desc[:desc.index("<!-- LOCALIZATIONS:")].strip()
+                        except Exception as je:
+                            logger.warning(f"Failed to parse localization JSON: {je}")
 
                 localizations = {
                     "en": {
@@ -337,7 +376,7 @@ class Orchestrator:
                         "description": eng_desc or ""
                     },
                     "ta": {
-                        "title": script.topic or script.title or "",
+                        "title": tamil_title or script.topic or script.title or "",
                         "description": eng_desc or ""
                     }
                 }

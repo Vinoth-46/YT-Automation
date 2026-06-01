@@ -35,7 +35,7 @@ class YouTubeEngine:
                     self.credentials = None
                     self.youtube = None
 
-    def upload_video(self, file_path, title, description, tags=None, category_id="27", privacy_status="private"):
+    def upload_video(self, file_path, title, description, tags=None, category_id="27", privacy_status="private", language="ta"):
         """Upload video to YouTube."""
         if not self.youtube:
             logger.error("YouTube client not initialized. Authenticate first.")
@@ -46,31 +46,40 @@ class YouTubeEngine:
         if len(safe_title) > 95:
             safe_title = safe_title[:95] + "..."
 
-        # Build visible hashtag string (appended to description) AND safe_tags (YouTube metadata)
-        hashtag_str = ""
-        safe_tags = []
-        current_tag_len = 0
+        # Build visible hashtag string AND safe_tags (YouTube metadata)
+        # YouTube only shows the FIRST 3 hashtags as clickable blue links above the title
+        # So we put the 3 most important ones at the START of the description
+        safe_tags = ["Shorts"]  # Always ensure #Shorts is first for Shorts shelf discovery
+        top_hashtags = ["#Shorts"]  # First 3 go at TOP of description
+        remaining_hashtags = []
+        current_tag_len = len("Shorts") + 1
         if tags:
-            formatted_tags = []
             for tag in tags:
                 clean = tag.strip().lstrip("#").replace(" ", "")
-                if clean:
-                    formatted_tags.append(f"#{clean}")
-                    # Also add to tags metadata (without #)
+                if clean and clean.lower() != "shorts":  # Skip duplicates of Shorts
                     if len(clean) < 50 and current_tag_len + len(clean) + 1 <= 400:
                         safe_tags.append(clean)
                         current_tag_len += len(clean) + 1
-            if formatted_tags:
-                hashtag_str = "\n\n" + " ".join(formatted_tags[:30])
+                    hashtag = f"#{clean}"
+                    if len(top_hashtags) < 3:
+                        top_hashtags.append(hashtag)
+                    else:
+                        remaining_hashtags.append(hashtag)
+        
+        # Top 3 hashtags go BEFORE description, remaining go AFTER
+        top_hashtag_str = " ".join(top_hashtags)
+        remaining_hashtag_str = "\n\n" + " ".join(remaining_hashtags[:25]) if remaining_hashtags else ""
 
-        full_description = (description or "") + hashtag_str
+        full_description = top_hashtag_str + "\n\n" + (description or "") + remaining_hashtag_str
 
         body = {
             'snippet': {
                 'title': safe_title,
                 'description': full_description,
                 'tags': safe_tags,
-                'categoryId': category_id
+                'categoryId': category_id,
+                'defaultLanguage': language,
+                'defaultAudioLanguage': language
             },
             'status': {
                 'privacyStatus': privacy_status,
