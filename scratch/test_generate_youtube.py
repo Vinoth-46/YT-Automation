@@ -31,7 +31,7 @@ async def main():
     logger.info(f"Created Job #{job_id}. Running the full automation pipeline...")
     
     try:
-        # Run the full pipeline (Script Gen -> Audio Gen -> Video Gen (with YouTube Downloader))
+        # Run the full pipeline (Script Gen -> Audio Gen -> Video Gen (with Pexels/Pixabay))
         await orch.run_pipeline(job_id)
         logger.info(f"🎉 Success! Pipeline completed for Job #{job_id}!")
     except Exception as e:

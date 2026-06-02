@@ -94,6 +94,7 @@ class VideoEngine:
             for i, scene in enumerate(scenes):
                 query = scene.get("visual_query", "civil engineering")
                 local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
+                downloaded_success = False
                 
                 logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
                 asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
