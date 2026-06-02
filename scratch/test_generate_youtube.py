@@ -10,9 +10,6 @@ from core.database import init_db
 from core.orchestrator import Orchestrator
 from core.config import settings
 
-# Force the video engine to use YouTube search and download
-settings.VIDEO_SOURCE = "youtube"
-
 # Set up clean logging to stdout so we can watch the progress live
 logging.basicConfig(
     level=logging.INFO,
