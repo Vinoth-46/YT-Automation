@@ -66,6 +66,9 @@ class Job(Base):
     upload_mode = Column(String)
     custom_topic = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
+    # Failure diagnostics — filled when state=FAILED
+    error_message = Column(Text, nullable=True)   # human-readable reason
+    failed_stage  = Column(String, nullable=True)  # e.g. "script", "audio", "video", "upload"
     
     schedule = relationship("Schedule", back_populates="jobs")
     script = relationship("ScriptAsset", back_populates="job", uselist=False)

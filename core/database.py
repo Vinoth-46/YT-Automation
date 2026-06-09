@@ -59,7 +59,31 @@ async def init_db():
     from .models import Base
     Database.connect()
     async with Database.engine.begin() as conn:
-        # This will create tables if they don't exist
-        # In production, use Alembic for migrations
+        # Create new tables; existing ones are NOT modified by create_all
         await conn.run_sync(Base.metadata.create_all)
+        # Safe-add new columns to existing tables (idempotent ALTER TABLE)
+        await _safe_migrate(conn)
     logger.info("Database tables initialized")
+
+
+async def _safe_migrate(conn):
+    """Add new columns to existing tables without dropping data.
+    Each ALTER TABLE is wrapped in a try/except so re-running is harmless.
+    """
+    migrations = [
+        # (table, column, sql_type)
+        ("jobs", "error_message", "TEXT"),
+        ("jobs", "failed_stage",  "VARCHAR(64)"),
+    ]
+    for table, column, sql_type in migrations:
+        try:
+            await conn.execute(
+                __import__("sqlalchemy").text(
+                    f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {sql_type}"
+                )
+            )
+            logger.info(f"Migration: ensured column {table}.{column} exists")
+        except Exception as e:
+            # Postgres: column already exists → ignore; any other error → log
+            if "already exists" not in str(e).lower():
+                logger.warning(f"Migration warning for {table}.{column}: {e}")

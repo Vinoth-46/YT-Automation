@@ -283,27 +283,102 @@ async def autopost_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Check status of recent jobs."""
+    """Check status of recent jobs with rich detail."""
     if not _is_authorized(update):
         await _reject_unauthorized(update)
         return
     try:
+        from core.models import ScriptAsset, VideoAsset, JobState
         Database = _get_db()
         Job, _, _, _, _, _ = _get_models()
+
         async with Database.get_session() as session:
             result = await session.execute(select(Job).order_by(Job.id.desc()).limit(5))
             jobs = result.scalars().all()
-            
+
             if not jobs:
                 await update.message.reply_text("📊 No recent jobs found. Use /generate to create one.")
                 return
-                
-            status_text = "📊 Recent Job Status:\n\n"
+
+        # State → emoji mapping
+        STATE_EMOJI = {
+            "scheduled":          "🕐",
+            "generating_script":  "📝",
+            "generating_audio":   "🔊",
+            "generating_visuals": "🎨",
+            "rendering_draft":    "🎬",
+            "awaiting_approval":  "⏳",
+            "uploading":          "📤",
+            "uploaded":           "✅",
+            "failed":             "❌",
+            "paused":             "⏸️",
+        }
+
+        # Stage → friendly name
+        STAGE_NAME = {
+            "scheduled":          "Scheduling",
+            "generating_script":  "Script Generation",
+            "generating_audio":   "Audio (TTS)",
+            "generating_visuals": "Visual Fetch (Pexels)",
+            "rendering_draft":    "FFmpeg Rendering",
+            "awaiting_approval":  "Approval",
+            "uploading":          "YouTube Upload",
+            "upload":             "YouTube Upload",
+            "unknown":            "Unknown Stage",
+        }
+
+        lines = ["📊 *Recent Jobs (last 5)*\n"]
+
+        async with Database.get_session() as session:
             for j in jobs:
-                date_str = j.planned_date.strftime('%Y-%m-%d %H:%M') if j.planned_date else "N/A"
-                status_text += f"🔹 ID: {j.id} | {j.state.value} | {date_str}\n"
-            
-            await update.message.reply_text(status_text)
+                state_val  = j.state.value if j.state else "unknown"
+                emoji      = STATE_EMOJI.get(state_val, "🔹")
+                date_str   = j.planned_date.strftime('%d %b %H:%M') if j.planned_date else "N/A"
+                topic_str  = ""
+                size_str   = ""
+                yt_str     = ""
+
+                # Fetch associated assets for extra detail
+                try:
+                    res_s = await session.execute(
+                        select(ScriptAsset).where(ScriptAsset.job_id == j.id)
+                        .order_by(ScriptAsset.id.desc()).limit(1)
+                    )
+                    script = res_s.scalar_one_or_none()
+                    if script and script.topic:
+                        topic_str = f"\n   📌 Topic: {script.topic[:60]}"
+
+                    res_v = await session.execute(
+                        select(VideoAsset).where(VideoAsset.job_id == j.id)
+                        .order_by(VideoAsset.id.desc()).limit(1)
+                    )
+                    video = res_v.scalar_one_or_none()
+                    if video:
+                        if video.draft_path and os.path.exists(video.draft_path):
+                            mb = os.path.getsize(video.draft_path) / (1024 * 1024)
+                            size_str = f"\n   📦 Size: {mb:.1f} MB"
+                        if video.final_path:
+                            yt_str = f"\n   🔗 {video.final_path}"
+                except Exception:
+                    pass
+
+                block = f"{emoji} *Job #{j.id}* — {state_val.upper()} ({date_str})"
+                block += topic_str
+                block += size_str
+                block += yt_str
+
+                # Rich failure explanation
+                if state_val == "failed":
+                    stage_name = STAGE_NAME.get(j.failed_stage or "", j.failed_stage or "Unknown")
+                    err_msg    = j.error_message or "No error details saved."
+                    block += f"\n   ⚠️ *Failed at:* {stage_name}"
+                    block += f"\n   💬 *Reason:* {err_msg}"
+
+                lines.append(block)
+
+        msg = "\n\n".join(lines)
+        await update.message.reply_text(msg, parse_mode="Markdown")
+
     except Exception as e:
         logger.error(f"Error in status_command: {e}")
         logger.error(traceback.format_exc())

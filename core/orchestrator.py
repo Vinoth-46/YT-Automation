@@ -33,6 +33,38 @@ class Orchestrator:
             await session.refresh(job)
             return job.id
 
+    async def _fail_job(self, job_id, stage: str, error: Exception):
+        """Mark job as FAILED and persist the stage + human-readable error message."""
+        import traceback as _tb
+        msg = str(error)
+        # Make common errors more human-readable
+        msg_lower = msg.lower()
+        if "request entity too large" in msg_lower or "413" in msg_lower:
+            msg = f"Video file is too large to send (>50 MB). It will be compressed automatically next run."
+        elif "quota" in msg_lower or "429" in msg_lower:
+            msg = "AI/API quota exceeded. Try again in a few minutes."
+        elif "no script asset" in msg_lower:
+            msg = "Script generation returned no content. AI may be rate-limited."
+        elif "audio generation failed" in msg_lower:
+            msg = "TTS audio generation failed. Check GROQ/HF_TOKEN secrets."
+        elif "video rendering failed" in msg_lower or "ffmpeg" in msg_lower:
+            msg = "FFmpeg video rendering failed. Check stock video downloads."
+        elif "no youtube channel" in msg_lower or "oauth" in msg_lower:
+            msg = "YouTube OAuth credentials missing or expired. Re-run auth."
+        elif "conflict" in msg_lower:
+            msg = "Telegram conflict: another bot instance is running simultaneously."
+        
+        async with Database.get_session() as session:
+            await session.execute(
+                update(Job).where(Job.id == job_id).values(
+                    state=JobState.FAILED,
+                    error_message=msg[:1000],   # cap at 1000 chars
+                    failed_stage=stage
+                )
+            )
+            await session.commit()
+        logger.error(f"Job {job_id} FAILED at stage '{stage}': {msg}")
+
     async def run_pipeline(self, job_id, progress_callback=None):
         """Execute the full lifecycle for a job with progress callbacks.
         
@@ -215,7 +247,15 @@ class Orchestrator:
         except Exception as e:
             logger.error(f"Pipeline failed for job {job_id}: {e}")
             logger.error(traceback.format_exc())
-            await self._update_job_state(job_id, JobState.FAILED)
+            # Determine which stage failed from current job state
+            try:
+                async with Database.get_session() as session:
+                    res = await session.execute(select(Job).where(Job.id == job_id))
+                    j = res.scalar_one_or_none()
+                    current_state = j.state.value if j else "unknown"
+            except Exception:
+                current_state = "unknown"
+            await self._fail_job(job_id, current_state, e)
             return False
 
     async def publish_video(self, job_id):
@@ -437,7 +477,7 @@ class Orchestrator:
 
         except Exception as e:
             logger.error(f"Publish failed for job {job_id}: {e}")
-            await self._update_job_state(job_id, JobState.FAILED)
+            await self._fail_job(job_id, "upload", e)
             raise e
 
     def _cleanup_old_outputs(self, current_job_id, keep_last=5):
