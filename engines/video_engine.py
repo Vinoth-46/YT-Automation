@@ -424,7 +424,7 @@ class VideoEngine:
                 logger.warning(f"Font cache setup failed (non-fatal): {fe}")
                 fonts_conf_path = None
             
-            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD...")
+            logger.info(f"FFmpeg: Pre-processing {len(scene_paths)} clips to {VID_W}x{VID_H} HD (max 9s per clip)...")
             
             # Step 1: Pre-process each clip individually
             watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
@@ -433,9 +433,14 @@ class VideoEngine:
             
             scenes = script_data.get("scenes", []) if script_data else []
             
+            import random as _rand
+            
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 
+                # ── Faster cuts: cap each clip to 8–10 s (varied for natural rhythm) ─────────
+                clip_duration = _rand.uniform(8.0, 10.0)  # 8-10s per scene
+
                 # Dynamic visual text overlay for high user retention
                 # Text overlays are completely disabled per user request
                 text_overlay = ""
@@ -457,27 +462,47 @@ class VideoEngine:
                 else:
                     drawtext_str = ""
 
+                # ── Subtle zoom-in (Ken Burns) for visual energy ────────────────────────
+                # Slowly zooms 100%→108% over the clip duration — keeps static footage alive
+                fps        = 30
+                zoom_frames = int(clip_duration * fps)
+                # zoompan filter: z=zoom value, d=total frames, s=output size
+                ken_burns = (
+                    f"scale={VID_W*2}:{VID_H*2},"
+                    f"zoompan=z='min(zoom+0.0005,1.08)':d={zoom_frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={VID_W}x{VID_H}:fps={fps}"
+                )
+
                 if has_watermark:
+                    vf = (
+                        f"[0:v]{ken_burns},crop={VID_W}:{VID_H},format=yuv420p{drawtext_str}[bg];"
+                        f"[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15"
+                    )
                     cmd = [
-                        "ffmpeg", "-y", "-i", p,
+                        "ffmpeg", "-y",
+                        "-i", p,
                         "-i", watermark_path,
+                        "-t", str(clip_duration),
                         "-threads", THREADS,
-                        "-filter_complex", f"[0:v]scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}[bg];[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15",
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                        "-max_muxing_queue_size", "2048",
-                        "-an",  # Strip audio
-                        processed_path
-                    ]
-                else:
-                    cmd = [
-                        "ffmpeg", "-y", "-i", p,
-                        "-threads", THREADS,
-                        "-vf", f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},fps=30,format=yuv420p{drawtext_str}",
+                        "-filter_complex", vf,
                         "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
                         "-max_muxing_queue_size", "2048",
                         "-an",
                         processed_path
                     ]
+                else:
+                    vf = f"{ken_burns},crop={VID_W}:{VID_H},format=yuv420p{drawtext_str}"
+                    cmd = [
+                        "ffmpeg", "-y",
+                        "-i", p,
+                        "-t", str(clip_duration),
+                        "-threads", THREADS,
+                        "-vf", vf,
+                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                        "-max_muxing_queue_size", "2048",
+                        "-an",
+                        processed_path
+                    ]
+                logger.info(f"Scene {idx+1}: trimmed to {clip_duration:.1f}s + Ken Burns zoom")
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )

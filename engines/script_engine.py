@@ -108,7 +108,27 @@ class ScriptEngine:
         return None
 
     async def generate_full_content(self, existing_topics=None, custom_topic=None):
-        """Mega-Prompt: Generate Topic and Script with Kitchaa's Enterprises branding."""
+        """Mega-Prompt: Generate Topic and Script with Kitchaa's Enterprises branding.
+        Trending topics from YouTube autocomplete are injected to maximise relevance.
+        """
+        # ── Fetch trending search terms (non-blocking — fails silently) ───────────────
+        trending_terms = []
+        try:
+            from engines.trends_engine import get_trending_topics
+            trending_terms = await asyncio.wait_for(get_trending_topics(max_results=8), timeout=15)
+        except Exception as te:
+            logger.warning(f"Trending topics fetch skipped: {te}")
+        
+        trending_block = ""
+        if trending_terms:
+            bullets = "\n".join(f"  • {t}" for t in trending_terms)
+            trending_block = (
+                f"\n🟢 CURRENTLY TRENDING on YouTube/Google (use these as INSPIRATION for your topic — pick or remix the most relevant one):\n"
+                f"{bullets}\n"
+                f"If none are civil-engineering related, ignore them and pick your own fresh topic.\n"
+            )
+            logger.info(f"Injected {len(trending_terms)} trending terms into prompt")
+
         business_details = (
             "Name: Nirmal .B.E(Civil)\n"
             "Business: Kitchaa's Enterprises\n"
@@ -138,6 +158,7 @@ class ScriptEngine:
             f"hot Indian climate considerations, and Vastu Shastra (traditional Indian architecture). "
             f"Do NOT generate content about foreign architectures (like Burj Khalifa, foreign suspension bridges, or US/European wooden frame houses). "
             f"Focus on common concrete, brick, tiling, waterproofing, and structural tips for mid-sized Indian residential homes.\n\n"
+            f"{trending_block}"
             f"🔴 PREVIOUS TOPICS BLACKLIST (DO NOT REPEAT OR MIMIC THESE):\n"
             f"{history_text or 'None'}\n\n"
             f"BRANDING REQUIREMENTS (Kitchaa's Enterprises):\n"
@@ -146,7 +167,11 @@ class ScriptEngine:
             f"1. TOPIC: {topic_instruction}\n"
             f"2. TITLE: Generate a highly intriguing, clear, benefit-driven YouTube title (e.g. 'Why Your Bathroom Floor Is Lower (Must-Know Tip Before Tiling)' or 'Avoid This Huge Foundation Mistake!') instead of only boring technical wording. It should immediately capture attention and spark curiosity. DO NOT start the title with 'STOP!' — vary your title hooks using different starting words like 'Avoid...', 'Why...', 'Never...', 'The Secret of...', 'Before You...', 'How to...' to ensure diversity.\n"
             f"3. SCRIPT (TAMIL) & PACING (CRITICAL FOR VIEW RETENTION):\n"
-            f"   - Hook (3s): Must start immediately with a shocking warning, critical mistake, or highly intriguing result (e.g. 'Don't make this huge mistake!', 'Have you seen this secret?', 'Avoid this at all costs!'). Avoid slow build-ups or rhetorical questions. DO NOT always start the hooks with 'Stop!'.\n"
+            f"   - HOOK (first 3 seconds — MOST IMPORTANT LINE IN THE ENTIRE VIDEO):\n"
+            f"     * MUST be a HARD PUNCH — a shocking statistic, a devastating mistake people make, or a surprising fact.\n"
+            f"     * EXAMPLES OF GOOD HOOKS: '90% of Tamil Nadu homes have this foundation mistake!', 'This one tiling error costs ₹50,000 to fix!', 'Engineers hide this secret from home owners!'\n"
+            f"     * BANNED OPENINGS: Rhetorical questions ('Did you know?', 'Have you ever?'), slow greetings, brand introductions in the first line.\n"
+            f"     * DO NOT start with 'Stop!', 'Nillungal!', or any variation of 'stop'.\n"
             f"   - Problem (5s max): Keep it extremely short (5 seconds max) explaining the risk.\n"
             f"   - Technical Solution (42-45s): Transition to the actual concrete, actionable steps and how-to guides (e.g. sand bed depth, exact calculations) within the first 8-10 seconds of the video so viewers don't swipe away.\n"
             f"   - The TOTAL narration must be approximately 55-60 seconds long when spoken (around 130-150 words). \n"
