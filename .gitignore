@@ -41,3 +41,9 @@ credentials/
 # IDEs
 .vscode/
 .idea/
+
+# YouTube OAuth tokens & Google secrets — NEVER commit these
+youtube_token.json
+*token*.json
+client_secret*.json
+download.txt
