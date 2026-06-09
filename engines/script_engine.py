@@ -38,8 +38,7 @@ class ScriptEngine:
         return False
 
     async def _generate_content(self, prompt, max_retries=3):
-        """Make an async request to Gemini API with retries, key rotation, and fallbacks."""
-        # Using the experimental models from your specific quota list
+        """Make an async request to Gemini API with retries, key rotation, search-grounding fallback, and delay."""
         models_to_try = [
             'gemini-2.5-flash',           # Primary: fast and capable
             'gemini-2.0-flash',           # Fallback 1: stable and fast
@@ -49,44 +48,63 @@ class ScriptEngine:
         ]
         
         for model in models_to_try:
-            for attempt in range(max_retries):
-                try:
-                    response = await asyncio.wait_for(
-                        asyncio.to_thread(
-                            self.client.models.generate_content,
-                            model=model,
-                            contents=prompt,
-                            config=types.GenerateContentConfig(
-                                temperature=0.9,
-                                tools=[types.Tool(google_search=types.GoogleSearch())]
+            # We will try both with and without search grounding if needed
+            for use_search in [True, False]:
+                logger.info(f"Attempting content generation with {model} (Google Search Grounding: {use_search})...")
+                
+                # Loop through key index offset to make sure we try all keys
+                for key_offset in range(len(self.api_keys)):
+                    # Rotate to next key for each attempt if we aren't on the first key of this stage
+                    if key_offset > 0:
+                        self._rotate_key()
+                        
+                    for attempt in range(max_retries):
+                        try:
+                            # Configure tools depending on search fallback
+                            tools = [types.Tool(google_search=types.GoogleSearch())] if use_search else None
+                            
+                            response = await asyncio.wait_for(
+                                asyncio.to_thread(
+                                    self.client.models.generate_content,
+                                    model=model,
+                                    contents=prompt,
+                                    config=types.GenerateContentConfig(
+                                        temperature=0.9,
+                                        tools=tools
+                                    )
+                                ),
+                                timeout=60
                             )
-                        ),
-                        timeout=60
-                    )
-                    logger.info(f"Gemini API success with model {model} on attempt {attempt+1}")
-                    return response.text
-                except asyncio.TimeoutError:
-                    logger.warning(f"Job timed out generating script with {model} on attempt {attempt+1}. Retrying...")
-                    continue
-                except Exception as e:
-                    error_str = str(e).lower()
-                    
-                    # Key Rotation logic for Rate Limits (429)
-                    if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
-                        logger.warning(f"Rate limit hit for {model} with current key.")
-                        if self._rotate_key():
-                            # Retry immediately with the new key for the SAME model
-                            continue 
-                        else:
-                            logger.warning(f"No more keys to rotate. Falling back to next model.")
-                            break 
-                    
-                    # Longer wait for 503/Server Busy
-                    wait_time = (2 ** attempt) * 5 # 5s, 10s, 20s
-                    logger.warning(f"Gemini API busy or error with {model}. Retrying in {wait_time}s...")
-                    await asyncio.sleep(wait_time)
-
-        logger.error("All Gemini API models and keys failed.")
+                            logger.info(f"🎉 Gemini API success with model {model} (Search: {use_search}) using Key #{self.current_key_index + 1}")
+                            return response.text
+                        except asyncio.TimeoutError:
+                            logger.warning(f"Job timed out generating script with {model} (Search: {use_search}) on attempt {attempt+1}. Retrying...")
+                            continue
+                        except Exception as e:
+                            error_str = str(e).lower()
+                            logger.warning(f"Error calling {model} on attempt {attempt+1}: {error_str}")
+                            
+                            # Check for rate limit or quota errors
+                            if "429" in error_str or "quota" in error_str or "exhausted" in error_str:
+                                # Switch key and retry immediately within the key loop
+                                logger.warning(f"Rate limit / quota hit for {model} with Key #{self.current_key_index + 1}.")
+                                if len(self.api_keys) > 1 and key_offset < len(self.api_keys) - 1:
+                                    logger.info("Rotating key to try again immediately...")
+                                    break # break out of the attempt loop to move to the next key_offset
+                                else:
+                                    # We have exhausted all keys for this configuration.
+                                    # Let's wait a bit before moving to the next model or next configuration
+                                    wait_sec = 10
+                                    logger.info(f"All keys exhausted for {model}. Sleeping for {wait_sec}s...")
+                                    await asyncio.sleep(wait_sec)
+                                    break
+                            else:
+                                # Non-429 error (e.g. 503 service unavailable or connection issues)
+                                wait_time = (2 ** attempt) * 5  # 5s, 10s, 20s
+                                logger.warning(f"Retrying in {wait_time}s due to non-429 error...")
+                                await asyncio.sleep(wait_time)
+                                
+        logger.error("❌ All Gemini API models, search modes, and keys failed.")
         return None
 
     async def generate_full_content(self, existing_topics=None, custom_topic=None):
