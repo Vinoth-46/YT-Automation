@@ -1,4 +1,5 @@
 import os
+import asyncio
 import logging
 import traceback
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -6,6 +7,49 @@ from telegram.ext import ContextTypes
 from sqlalchemy import select
 
 logger = logging.getLogger(__name__)
+
+# Telegram Bot API hard limit for send_video
+TELEGRAM_MAX_BYTES = 49 * 1024 * 1024  # 49 MB (safe margin below 50 MB)
+
+
+async def _compress_for_telegram(input_path: str) -> str:
+    """Re-encode video to CRF 32 (~half the bitrate) so it fits under Telegram's 50 MB limit.
+    Returns the path to the (possibly compressed) file.
+    If the input is already small enough it is returned as-is.
+    """
+    size = os.path.getsize(input_path)
+    if size <= TELEGRAM_MAX_BYTES:
+        return input_path  # already fine
+
+    compressed_path = input_path.replace(".mp4", "_tg.mp4")
+    logger.info(
+        f"Video is {size // (1024*1024)} MB — too large for Telegram. "
+        f"Re-encoding to CRF 32 → {compressed_path}"
+    )
+
+    cmd = [
+        "ffmpeg", "-y", "-i", input_path,
+        "-vf", "scale=720:1280",          # downscale 1080p→1280 short-side
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", "32",
+        "-c:a", "aac", "-b:a", "96k",
+        "-movflags", "+faststart",
+        compressed_path
+    ]
+
+    proc = await asyncio.create_subprocess_exec(
+        *cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
+    )
+    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+
+    if proc.returncode != 0 or not os.path.exists(compressed_path):
+        logger.error(f"Compression failed: {stderr.decode(errors='replace')[-300:]}")
+        return input_path  # return original; send_video will raise and we handle below
+
+    compressed_size = os.path.getsize(compressed_path)
+    logger.info(f"Compressed: {size // (1024*1024)} MB → {compressed_size // (1024*1024)} MB")
+    return compressed_path
 
 
 # ── Authorization guard ──────────────────────────────────────────────────────
@@ -519,13 +563,23 @@ async def _run_and_notify(job_id, chat_id, context):
                     [InlineKeyboardButton("🔄 Regenerate", callback_data=f"regen_{job_id}")]
                 ]
 
-            import asyncio
             from telegram.error import RetryAfter, BadRequest
 
+            # ── Compress if video exceeds Telegram's 50 MB limit ────────────
+            try:
+                send_path = await _compress_for_telegram(video_path)
+            except Exception as ce:
+                logger.warning(f"Compression step failed ({ce}), will try original file.")
+                send_path = video_path
+
+            send_size_mb = os.path.getsize(send_path) // (1024 * 1024)
+            logger.info(f"Sending video to Telegram ({send_size_mb} MB): {send_path}")
+
             max_retries = 3
+            sent_ok = False
             for attempt in range(max_retries):
                 try:
-                    with open(video_path, 'rb') as v:
+                    with open(send_path, 'rb') as v:
                         await context.bot.send_video(
                             chat_id=chat_id,
                             video=v,
@@ -535,17 +589,43 @@ async def _run_and_notify(job_id, chat_id, context):
                             read_timeout=1200,
                             connect_timeout=1200
                         )
+                    sent_ok = True
                     break
-                except (RetryAfter, BadRequest) as e:
-                    err_msg = str(e)
-                    if "Too many requests" in err_msg or isinstance(e, RetryAfter):
-                        retry_delay = getattr(e, 'retry_after', 10)
-                        if attempt == max_retries - 1:
+                except RetryAfter as e:
+                    retry_delay = getattr(e, 'retry_after', 10)
+                    if attempt == max_retries - 1:
+                        raise
+                    logger.warning(f"Telegram rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
+                    await asyncio.sleep(retry_delay + 1)
+                except BadRequest as e:
+                    if "request entity too large" in str(e).lower():
+                        # Last resort: send as a downloadable document instead
+                        logger.warning("Video still too large for send_video. Sending as document...")
+                        try:
+                            with open(send_path, 'rb') as v:
+                                await context.bot.send_document(
+                                    chat_id=chat_id,
+                                    document=v,
+                                    caption=caption + "\n\n⚠️ Sent as file (video too large for preview).",
+                                    reply_markup=InlineKeyboardMarkup(keyboard),
+                                    write_timeout=1200,
+                                    read_timeout=1200,
+                                    connect_timeout=1200
+                                )
+                        except Exception as de:
+                            logger.error(f"Document fallback also failed: {de}")
                             raise
-                        logger.warning(f"Telegram rate limit hit. Retrying in {retry_delay}s... (Attempt {attempt+1}/{max_retries})")
-                        await asyncio.sleep(retry_delay + 1)
+                        sent_ok = True
+                        break
                     else:
                         raise
+
+            # Clean up compressed temp file if we created one
+            if send_path != video_path and os.path.exists(send_path):
+                try:
+                    os.remove(send_path)
+                except Exception:
+                    pass
 
             # Send a separate tap-to-copy metadata message for mobile convenience
             title = script.title if script else "Unknown Title"

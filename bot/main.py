@@ -125,10 +125,36 @@ async def post_stop(application):
     
     logger.info("Bot post-stop completed")
 
+async def _wait_for_telegram_lock_release(max_retries: int = 10, retry_interval: float = 6.0):
+    """Poll Telegram until no other instance holds the getUpdates lock.
+    Returns True if the lock is free, False if we exhausted retries.
+    """
+    from telegram import Bot as _Bot
+    from telegram.error import Conflict as _Conflict
+    for attempt in range(1, max_retries + 1):
+        try:
+            temp = _Bot(token=settings.TELEGRAM_BOT_TOKEN)
+            async with temp:
+                await temp.get_updates(limit=1, timeout=2)
+            logger.info(f"✅ Telegram lock free (attempt {attempt}/{max_retries})")
+            return True
+        except _Conflict:
+            logger.warning(
+                f"⏳ Another instance still holds the getUpdates lock "
+                f"(attempt {attempt}/{max_retries}). Retrying in {retry_interval}s..."
+            )
+            await asyncio.sleep(retry_interval)
+        except Exception as e:
+            logger.warning(f"⚠️ Lock-check error (attempt {attempt}): {e}")
+            await asyncio.sleep(retry_interval)
+    logger.error("❌ Telegram lock never released — proceeding anyway.")
+    return False
+
+
 async def run_bot():
     global _application
     
-    # Clear any stale getUpdates session
+    # ── Step 1: delete any webhook so polling mode is active ────────────────
     logger.info("🧹 Clearing stale Telegram sessions...")
     try:
         temp_bot = Bot(token=settings.TELEGRAM_BOT_TOKEN)
@@ -140,9 +166,13 @@ async def run_bot():
     except Exception as e:
         logger.warning(f"⚠️ Session clear warning: {e}")
     
-    # Wait longer to allow Telegram to release the session from other instances
-    await asyncio.sleep(5)
+    # ── Step 2: wait for Telegram to release any stale getUpdates lock ───────
+    # 15 s is usually enough; the retry loop gives up to ~60 s extra.
+    logger.info("⏳ Waiting 15 s for Telegram to release the previous session lock...")
+    await asyncio.sleep(15)
+    await _wait_for_telegram_lock_release(max_retries=10, retry_interval=6.0)
     
+    # ── Step 3: build the application and register handlers ─────────────────
     application = (
         ApplicationBuilder()
         .token(settings.TELEGRAM_BOT_TOKEN)
