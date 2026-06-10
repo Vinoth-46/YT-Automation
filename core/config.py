@@ -58,3 +58,11 @@ os.makedirs(settings.OUTPUT_DIR, exist_ok=True)
 os.makedirs(settings.TEMP_DIR, exist_ok=True)
 os.makedirs(settings.ASSETS_DIR, exist_ok=True)
 os.makedirs(settings.CREDENTIALS_DIR, exist_ok=True)
+
+# Apply logging security filters to redact bot token
+try:
+    from core.security import apply_security_filters
+    apply_security_filters()
+except Exception:
+    pass
+
