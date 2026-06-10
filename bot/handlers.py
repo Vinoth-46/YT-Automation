@@ -823,6 +823,12 @@ async def _run_and_notify(job_id, chat_id, context):
         logger.error(f"Error in _run_and_notify: {e}")
         logger.error(traceback.format_exc())
         try:
+            from core.orchestrator import Orchestrator
+            orchestrator = Orchestrator()
+            await orchestrator._fail_job(job_id, "telegram_delivery", e)
+        except Exception as fe:
+            logger.error(f"Failed to mark job as failed: {fe}")
+        try:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Pipeline error: {str(e)}")
         except Exception:
             pass

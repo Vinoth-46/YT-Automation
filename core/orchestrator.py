@@ -2,6 +2,7 @@ import os
 import re
 import logging
 import traceback
+import asyncio
 from datetime import datetime
 from sqlalchemy import select, update
 from core.config import settings
@@ -11,6 +12,8 @@ from core.models import Job, JobState, ScriptAsset, AudioAsset, VideoAsset
 logger = logging.getLogger(__name__)
 
 class Orchestrator:
+    _pipeline_lock = asyncio.Lock()
+
     def __init__(self):
         from engines.script_engine import ScriptEngine
         from engines.audio_engine import AudioEngine
@@ -18,6 +21,7 @@ class Orchestrator:
         self.script_engine = ScriptEngine()
         self.audio_engine = AudioEngine()
         self.video_engine = VideoEngine()
+
 
     async def create_job(self, schedule_id=None, planned_date=None, custom_topic=None):
         """Create a new job record in the database."""
@@ -81,6 +85,10 @@ class Orchestrator:
                 except Exception as e:
                     logger.warning(f"Progress callback failed: {e}")
 
+        async with self._pipeline_lock:
+            return await self._run_pipeline_locked(job_id, notify)
+
+    async def _run_pipeline_locked(self, job_id, notify):
         try:
             # ===== STAGE 1: Script Generation =====
             await self._update_job_state(job_id, JobState.GENERATING_SCRIPT)
@@ -257,6 +265,7 @@ class Orchestrator:
                 current_state = "unknown"
             await self._fail_job(job_id, current_state, e)
             return False
+
 
     async def publish_video(self, job_id):
         """Upload an approved video to YouTube with retry logic."""

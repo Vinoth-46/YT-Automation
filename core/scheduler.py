@@ -33,8 +33,15 @@ class SchedulerService:
             for sched in schedules:
                 self.add_schedule_job(sched)
 
-        # Always guarantee the 12:00 noon fully-automatic job is registered
-        self._ensure_auto_noon_job()
+        # Always guarantee the 12:00 noon fully-automatic job is registered unless a DB schedule exists at 12:00
+        has_noon_db_schedule = any(s.publish_time == AUTO_SCHEDULE_TIME for s in schedules)
+        if not has_noon_db_schedule:
+            self._ensure_auto_noon_job()
+        else:
+            if self.scheduler.get_job(AUTO_SCHEDULE_TAG):
+                self.scheduler.remove_job(AUTO_SCHEDULE_TAG)
+            logger.info(f"Skipped registering hardcoded noon auto-publish because a database schedule already exists for {AUTO_SCHEDULE_TIME}")
+
 
     def _ensure_auto_noon_job(self):
         """Register (or re-register) the 12:00 noon fully-automatic publish job."""
