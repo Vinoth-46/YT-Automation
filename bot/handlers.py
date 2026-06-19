@@ -177,6 +177,14 @@ async def schedule_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             new_schedule = Schedule(user_id=user.id, publish_time=time_str, status="active")
             session.add(new_schedule)
             await session.commit()
+
+            # Reload scheduler in memory to apply changes immediately
+            try:
+                scheduler = context.application.bot_data.get("scheduler")
+                if scheduler:
+                    await scheduler.reload_schedules()
+            except Exception as se:
+                logger.error(f"Failed to reload scheduler after schedule: {se}")
         
         await update.message.reply_text(f"✅ Daily schedule set for {time_str} IST.")
     except Exception as e:
@@ -237,10 +245,9 @@ async def clear_schedule_command(update: Update, context: ContextTypes.DEFAULT_T
             try:
                 scheduler = context.application.bot_data.get("scheduler")
                 if scheduler:
-                    # Clear all jobs in APScheduler
-                    scheduler.scheduler.remove_all_jobs()
-            except Exception:
-                pass
+                    await scheduler.reload_schedules()
+            except Exception as se:
+                logger.error(f"Failed to reload scheduler after clear: {se}")
                 
         await update.message.reply_text("🗑️ All active schedules have been revoked/cleared successfully.")
     except Exception as e:
