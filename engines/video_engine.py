@@ -5,12 +5,14 @@ import aiohttp
 import httpx
 import traceback
 from core.config import settings
+from engines.animation_engine import AnimationEngine
 
 logger = logging.getLogger(__name__)
 
 class VideoEngine:
     def __init__(self):
         self.pexels_api_key = settings.PEXELS_API_KEY
+        self.animation_engine = AnimationEngine()
 
     async def assemble_video(self, job_id, narration_path, script_data):
         """Orchestrate the hybrid visual assembly."""
@@ -96,12 +98,32 @@ class VideoEngine:
                 local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                 downloaded_success = False
                 
-                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels for '{query}'")
-                asset_url = await self._search_pexels(session, query, used_video_ids, valid_lines)
+                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels & Pixabay for '{query}'")
                 
-                if not asset_url:
-                    logger.info(f"Job {job_id}: Scene {i+1} — Pexels had no results. Trying Pixabay fallback...")
-                    asset_url = await self._search_pixabay(session, query, used_video_ids, valid_lines)
+                # Check both platforms sequentially with increasing fallback generality to maximize relevance
+                search_steps = [
+                    # (platform, query_string, orientation)
+                    ("pexels", query, "portrait"),
+                    ("pixabay", query, None),
+                    ("pexels", query, "all"),
+                    ("pexels", f"{query} construction", "portrait"),
+                    ("pixabay", f"{query} construction", None),
+                    ("pexels", "civil engineering construction", "portrait"),
+                    ("pixabay", "civil engineering construction", None),
+                    ("pexels", "building site", "portrait"),
+                    ("pixabay", "building site", None)
+                ]
+                
+                asset_url = None
+                for platform, q_str, orient in search_steps:
+                    if platform == "pexels":
+                        asset_url = await self._search_pexels(session, q_str, used_video_ids, valid_lines, orientation=orient)
+                    else:
+                        asset_url = await self._search_pixabay(session, q_str, used_video_ids, valid_lines)
+                        
+                    if asset_url:
+                        logger.info(f"Job {job_id}: Scene {i+1} — found match on {platform} for '{q_str}'")
+                        break
                     
                 if asset_url:
                     downloaded_success = await self._download_file(session, asset_url, local_path)
@@ -348,6 +370,7 @@ class VideoEngine:
         concat_output = None
         
         try:
+            dirs_to_clean = []
             # Step 0: Ensure Tamil Font exists
             fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
             os.makedirs(fonts_dir, exist_ok=True)
@@ -462,47 +485,88 @@ class VideoEngine:
                 else:
                     drawtext_str = ""
 
-                # ── Subtle zoom-in (Ken Burns) for visual energy ────────────────────────
-                # Slowly zooms 100%→108% over the clip duration — keeps static footage alive
-                fps        = 30
-                zoom_frames = int(clip_duration * fps)
-                # zoompan filter: z=zoom value, d=total frames, s=output size
-                ken_burns = (
-                    f"scale={VID_W*2}:{VID_H*2},"
-                    f"zoompan=z='min(zoom+0.0005,1.08)':d={zoom_frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s={VID_W}x{VID_H}:fps={fps}"
-                )
+                # Scale and crop landscape videos to 1080x1920 portrait aspect ratio
+                scale_crop = f"scale={VID_W}:{VID_H}:force_original_aspect_ratio=increase,crop={VID_W}:{VID_H},format=yuv420p{drawtext_str}"
 
-                if has_watermark:
-                    vf = (
-                        f"[0:v]{ken_burns},crop={VID_W}:{VID_H},format=yuv420p{drawtext_str}[bg];"
-                        f"[1:v]scale={WM_SCALE}:-1[wm];[bg][wm]overlay=W-w-15:15"
-                    )
-                    cmd = [
-                        "ffmpeg", "-y",
-                        "-i", p,
-                        "-i", watermark_path,
-                        "-t", str(clip_duration),
-                        "-threads", THREADS,
-                        "-filter_complex", vf,
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                        "-max_muxing_queue_size", "2048",
-                        "-an",
-                        processed_path
-                    ]
+                # ── Animation Generation ──────────────────────────────────────
+                anim_input_args = []
+                anim_temp_dir = ""
+                
+                scene_config = scenes[idx] if idx < len(scenes) else {}
+                anim_config = scene_config.get("animation")
+                
+                if anim_config and isinstance(anim_config, dict) and anim_config.get("type"):
+                    anim_temp_dir = os.path.join(temp_dir, f"{job_id}_scene_{idx}_anim")
+                    try:
+                        pattern_path = self.animation_engine.render_animation(
+                            anim_config, 
+                            duration=clip_duration, 
+                            output_dir=anim_temp_dir
+                        )
+                        pattern_rel = os.path.relpath(pattern_path).replace(chr(92), '/')
+                        anim_input_args = ["-framerate", "30", "-i", pattern_rel]
+                        dirs_to_clean.append(anim_temp_dir)
+                        logger.info(f"Scene {idx+1}: Generated animation overlay of type '{anim_config.get('type')}'")
+                    except Exception as ae:
+                        logger.error(f"Scene {idx+1}: Failed to generate animation: {ae}")
+                        anim_input_args = []
+                        anim_temp_dir = ""
                 else:
-                    vf = f"{ken_burns},crop={VID_W}:{VID_H},format=yuv420p{drawtext_str}"
-                    cmd = [
-                        "ffmpeg", "-y",
-                        "-i", p,
-                        "-t", str(clip_duration),
-                        "-threads", THREADS,
-                        "-vf", vf,
-                        "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
-                        "-max_muxing_queue_size", "2048",
-                        "-an",
-                        processed_path
+                    logger.info(f"Scene {idx+1}: No animation config (anim_config={anim_config})")
+
+                # Build dynamic FFmpeg command
+                cmd = ["ffmpeg", "-y", "-i", p]
+                next_input_idx = 1
+                
+                watermark_input_idx = -1
+                if has_watermark:
+                    cmd += ["-i", watermark_path]
+                    watermark_input_idx = next_input_idx
+                    next_input_idx += 1
+                    
+                anim_input_idx = -1
+                if anim_input_args:
+                    cmd += anim_input_args
+                    anim_input_idx = next_input_idx
+                    next_input_idx += 1
+                    
+                # Build filter complex
+                filter_parts = [f"[0:v]{scale_crop}[bg]"]
+                last_label = "[bg]"
+                
+                if anim_input_idx != -1:
+                    filter_parts.append(f"[{anim_input_idx}:v]scale={VID_W}:{VID_H}[anim]")
+                    filter_parts.append(f"{last_label}[anim]overlay=0:0[bg_anim]")
+                    last_label = "[bg_anim]"
+                    
+                if watermark_input_idx != -1:
+                    filter_parts.append(f"[{watermark_input_idx}:v]scale={WM_SCALE}:-1[wm]")
+                    filter_parts.append(f"{last_label}[wm]overlay=W-w-15:15[out_v]")
+                    last_label = "[out_v]"
+                    
+                filter_complex_str = ";".join(filter_parts)
+
+                cmd += [
+                    "-t", str(clip_duration),
+                    "-threads", THREADS
+                ]
+                
+                if watermark_input_idx == -1 and anim_input_idx == -1:
+                    cmd += ["-vf", scale_crop]
+                else:
+                    cmd += [
+                        "-filter_complex", filter_complex_str,
+                        "-map", last_label
                     ]
-                logger.info(f"Scene {idx+1}: trimmed to {clip_duration:.1f}s + Ken Burns zoom")
+                    
+                cmd += [
+                    "-c:v", "libx264", "-preset", PRESET, "-crf", CRF,
+                    "-max_muxing_queue_size", "2048",
+                    "-an",
+                    processed_path
+                ]
+
+                logger.info(f"Scene {idx+1}: trimmed to {clip_duration:.1f}s (animation: {anim_input_idx != -1})")
                 process = await asyncio.create_subprocess_exec(
                     *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
@@ -839,134 +903,99 @@ class VideoEngine:
                             os.remove(f)
                         except Exception:
                             pass
-    async def _search_pexels(self, session, query, used_video_ids, valid_lines):
-        """Search Pexels API with technical fallbacks and orientation fallback (async)."""
+            if 'dirs_to_clean' in locals():
+                import shutil
+                for d in dirs_to_clean:
+                    if d and os.path.exists(d):
+                        try:
+                            shutil.rmtree(d)
+                        except Exception:
+                            pass
+    async def _search_pexels(self, session, query, used_video_ids, valid_lines, orientation="portrait"):
+        """Search Pexels API for a single query (async)."""
         query = query.strip().lower()
-        
-        # Stricter but simpler technical filtering
-        fallbacks = [
-            f"{query} construction",
-            f"{query}",
-            "civil engineering construction",
-            "building site"
-        ]
-        
         headers = {"Authorization": self.pexels_api_key}
+        url = f"https://api.pexels.com/videos/search?query={query}&per_page=30"
+        if orientation == "portrait":
+            url += "&orientation=portrait"
         
-        for q in fallbacks:
-            # Try portrait orientation first, then try all orientations (landscape/square cropped by FFmpeg)
-            for orientation in ["portrait", "all"]:
-                url = f"https://api.pexels.com/videos/search?query={q}&per_page=50"
-                if orientation == "portrait":
-                    url += "&orientation=portrait"
+        try:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    return None
                 
-                try:
-                    async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                        if response.status != 200:
-                            logger.warning(f"Pexels API returned {response.status} for '{q}' ({orientation})")
-                            continue
-                        
-                        data = await response.json()
-                        
-                        if data.get("videos"):
-                            import random
-                            videos_list = data["videos"]
-                            random.shuffle(videos_list)
-                            
-                            for video in videos_list:
-                                vid_id = str(video.get("id", ""))
-                                if vid_id not in used_video_ids:
-                                    used_video_ids.add(vid_id)
-                                    import time as _time
-                                    valid_lines.append(f"{vid_id}|{_time.time()}")
-                                    video_files = video.get("video_files", [])
-                                    # Find a reasonable quality file (not too large for free tier)
-                                    for vf in video_files:
-                                        width = vf.get("width", 0)
-                                        height = vf.get("height", 0)
-                                        # Prefer SD/HD instead of 4K/1080p to save FFmpeg memory
-                                        if 720 <= width <= 1920 or 720 <= height <= 1920:
-                                            logger.info(f"Pexels match: '{q}' ({orientation}) → video {vid_id} ({width}p)")
-                                            return vf["link"]
-                                    # Fallback to smallest file to prevent OOM
-                                    if video_files:
-                                        smallest = min(video_files, key=lambda x: x.get("width", 9999))
-                                        logger.info(f"Pexels match (fallback smallest): '{q}' ({orientation}) → video {vid_id} ({smallest.get('width')}p)")
-                                        return smallest["link"]
-                except asyncio.TimeoutError:
-                    logger.warning(f"Pexels timeout for query '{q}' ({orientation})")
-                except Exception as e:
-                    logger.error(f"Pexels error for query '{q}' ({orientation}): {e}")
-                    
-        logger.warning(f"No Pexels results for '{query}' or fallbacks")
+                data = await response.json()
+                videos = data.get("videos", [])
+                if videos:
+                    import random
+                    random.shuffle(videos)
+                    for video in videos:
+                        vid_id = str(video.get("id", ""))
+                        if vid_id not in used_video_ids:
+                            used_video_ids.add(vid_id)
+                            import time as _time
+                            valid_lines.append(f"{vid_id}|{_time.time()}")
+                            video_files = video.get("video_files", [])
+                            for vf in video_files:
+                                width = vf.get("width", 0)
+                                height = vf.get("height", 0)
+                                if 720 <= width <= 1920 or 720 <= height <= 1920:
+                                    return vf["link"]
+                            if video_files:
+                                smallest = min(video_files, key=lambda x: x.get("width", 9999))
+                                return smallest["link"]
+        except Exception as e:
+            logger.warning(f"Pexels search error for '{query}' ({orientation}): {e}")
         return None
 
     async def _search_pixabay(self, session, query, used_video_ids, valid_lines):
-        """Search Pixabay API as secondary library fallback (async)."""
+        """Search Pixabay API for a single query (async)."""
         api_key = getattr(settings, "PIXABAY_API_KEY", "")
         if not api_key:
             return None
             
         query = query.strip().lower()
-        fallbacks = [
-            f"{query} construction",
-            f"{query}",
-            "civil engineering construction",
-            "building site"
-        ]
-        
-        for q in fallbacks:
-            # We fetch up to 30 videos per query from Pixabay
-            url = f"https://pixabay.com/api/videos/?key={api_key}&q={q}&per_page=30"
-            try:
-                async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                    if response.status != 200:
-                        logger.warning(f"Pixabay API returned {response.status} for '{q}'")
-                        continue
-                    
-                    data = await response.json()
-                    hits = data.get("hits", [])
-                    
-                    if hits:
-                        import random
-                        random.shuffle(hits)
-                        
-                        # Attempt 1: Look for vertical/portrait videos first
-                        for hit in hits:
-                            vid_id = str(hit.get("id", ""))
-                            if vid_id not in used_video_ids:
-                                videos = hit.get("videos", {})
-                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
-                                if size_key in videos:
-                                    vid_info = videos[size_key]
-                                    width = vid_info.get("width", 0)
-                                    height = vid_info.get("height", 0)
-                                    if height > width:  # Portrait video!
-                                        used_video_ids.add(vid_id)
-                                        import time as _time
-                                        valid_lines.append(f"{vid_id}|{_time.time()}")
-                                        logger.info(f"Pixabay match (portrait): '{q}' → video {vid_id} ({width}x{height})")
-                                        return vid_info["url"]
-                                        
-                        # Attempt 2: Fallback to any orientation (cropped by FFmpeg)
-                        for hit in hits:
-                            vid_id = str(hit.get("id", ""))
-                            if vid_id not in used_video_ids:
-                                videos = hit.get("videos", {})
-                                size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
-                                if size_key in videos:
-                                    vid_info = videos[size_key]
-                                    width = vid_info.get("width", 0)
-                                    height = vid_info.get("height", 0)
+        url = f"https://pixabay.com/api/videos/?key={api_key}&q={query}&per_page=30"
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
+                if response.status != 200:
+                    return None
+                
+                data = await response.json()
+                hits = data.get("hits", [])
+                if hits:
+                    import random
+                    random.shuffle(hits)
+                    # Attempt 1: Portrait first
+                    for hit in hits:
+                        vid_id = str(hit.get("id", ""))
+                        if vid_id not in used_video_ids:
+                            videos = hit.get("videos", {})
+                            size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                            if size_key in videos:
+                                vid_info = videos[size_key]
+                                width = vid_info.get("width", 0)
+                                height = vid_info.get("height", 0)
+                                if height > width:
                                     used_video_ids.add(vid_id)
                                     import time as _time
                                     valid_lines.append(f"{vid_id}|{_time.time()}")
-                                    logger.info(f"Pixabay match (any): '{q}' → video {vid_id} ({width}x{height})")
                                     return vid_info["url"]
-            except Exception as e:
-                logger.error(f"Pixabay error for query '{q}': {e}")
-                
-        logger.warning(f"No Pixabay results for '{query}' or fallbacks")
+                                    
+                    # Attempt 2: Landscape/Any (FFmpeg will crop)
+                    for hit in hits:
+                        vid_id = str(hit.get("id", ""))
+                        if vid_id not in used_video_ids:
+                            videos = hit.get("videos", {})
+                            size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                            if size_key in videos:
+                                vid_info = videos[size_key]
+                                used_video_ids.add(vid_id)
+                                import time as _time
+                                valid_lines.append(f"{vid_id}|{_time.time()}")
+                                return vid_info["url"]
+        except Exception as e:
+            logger.warning(f"Pixabay search error for '{query}': {e}")
         return None
     async def _download_file(self, session, url, path):
         """Download asset locally (async with progress)."""

@@ -318,6 +318,23 @@ class Orchestrator:
             if "<!-- LOCALIZATIONS:" in clean_description:
                 clean_description = clean_description[:clean_description.index("<!-- LOCALIZATIONS:")].strip()
 
+            # Fetch fresh daily trending hashtags at publish time
+            publish_tags = list(script.hashtags or [])
+            try:
+                from engines.trends_engine import get_daily_trending_hashtags
+                topic_keywords = [script.topic] if script.topic else []
+                daily_tags = await get_daily_trending_hashtags(topic_keywords)
+                # Merge: script tags first (topic-specific), then daily trending
+                existing_lower = {t.lower().strip().lstrip("#") for t in publish_tags}
+                for tag in daily_tags:
+                    clean = tag.strip().lstrip("#")
+                    if clean.lower() not in existing_lower:
+                        publish_tags.append(clean)
+                        existing_lower.add(clean.lower())
+                logger.info(f"Merged {len(daily_tags)} daily trending tags -> {len(publish_tags)} total tags")
+            except Exception as trend_err:
+                logger.warning(f"Daily trending hashtag fetch failed (using stored tags): {trend_err}")
+
             # Upload with retry logic (3 attempts, exponential backoff)
             video_id = None
             max_retries = 3
@@ -327,7 +344,7 @@ class Orchestrator:
                         file_path=video.draft_path,
                         title=script.title,
                         description=clean_description,
-                        tags=script.hashtags,
+                        tags=publish_tags,
                         privacy_status="public"
                     )
                     if video_id:
