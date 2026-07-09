@@ -12,8 +12,98 @@ class AudioEngine:
         self.primary_model = "models/gemini-3.1-flash-tts-preview"
         self.fallback_model = "models/gemini-2.5-flash-preview-tts"
 
+    async def _generate_segment_audio(self, text, segment_path, job_id):
+        """Generate audio for a single segment with fallback sequence."""
+        # Primary: Gemini 3.5 TTS
+        try:
+            result = await asyncio.wait_for(
+                self._generate_gemini_tts(text, segment_path, job_id, self.primary_model),
+                timeout=45
+            )
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"Segment TTS primary failed: {e}")
+
+        # Fallback 1: Gemini 3.1 TTS
+        try:
+            result = await asyncio.wait_for(
+                self._generate_gemini_tts(text, segment_path, job_id, self.fallback_model),
+                timeout=45
+            )
+            if result:
+                return result
+        except Exception as e:
+            logger.warning(f"Segment TTS fallback failed: {e}")
+
+        # Fallback 2: gTTS
+        return await self._generate_gtts(text, segment_path, job_id)
+
     async def generate_narration(self, script_data, job_id, mode="publish"):
-        """Generate narration using Gemini TTS with fallbacks."""
+        """Generate narration using Gemini TTS with fallbacks.
+        
+        Attempts to generate scene-specific audios to match the script scenes
+        and concatenates them to guarantee exact audio-visual timing sync.
+        """
+        scenes = script_data.get("scenes", [])
+        output_filename = f"{job_id}_narration.wav"
+        output_path = os.path.join(settings.OUTPUT_DIR, output_filename)
+        
+        # Check if we can do segmented sync audio
+        has_scene_narration = all(isinstance(s, dict) and s.get("narration_tamil") for s in scenes)
+        
+        if has_scene_narration and len(scenes) > 0:
+            logger.info(f"Job {job_id}: Found scene-specific narration. Generating segmented synced audio...")
+            try:
+                # Setup temp directory for segments
+                temp_audio_dir = os.path.join(settings.TEMP_DIR, f"{job_id}_audio_segments")
+                os.makedirs(temp_audio_dir, exist_ok=True)
+                
+                segment_paths = []
+                tasks = []
+                
+                for idx, scene in enumerate(scenes):
+                    seg_text = scene["narration_tamil"].strip()
+                    seg_path = os.path.join(temp_audio_dir, f"{job_id}_scene_{idx}_narration.wav")
+                    segment_paths.append(seg_path)
+                    tasks.append(self._generate_segment_audio(seg_text, seg_path, job_id))
+                
+                # Execute in parallel to save time
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                
+                # Verify all succeeded
+                all_ok = True
+                for idx, res in enumerate(results):
+                    if isinstance(res, Exception) or not res or not os.path.exists(segment_paths[idx]):
+                        logger.error(f"Job {job_id}: Segment {idx+1} audio generation failed: {res}")
+                        all_ok = False
+                        break
+                
+                if all_ok:
+                    # Concatenate with FFmpeg
+                    logger.info(f"Job {job_id}: All segments generated successfully. Concatenating...")
+                    concat_list_path = os.path.join(temp_audio_dir, "audio_concat.txt")
+                    with open(concat_list_path, "w", encoding="utf-8") as f:
+                        for path in segment_paths:
+                            f.write(f"file '{os.path.abspath(path)}'\n")
+                            
+                    concat_cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list_path, "-c", "copy", output_path]
+                    proc = await asyncio.create_subprocess_exec(
+                        *concat_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                    )
+                    _, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                    
+                    if proc.returncode == 0 and os.path.exists(output_path):
+                        logger.info(f"Job {job_id}: Segmented synced audio successfully concatenated to {output_path}")
+                        # We keep individual segments in temp directory so video_engine can read durations
+                        return output_path
+                    else:
+                        logger.error(f"Job {job_id}: Audio concat failed: {stderr.decode()[-200:]}")
+            except Exception as e:
+                logger.error(f"Job {job_id}: Segmented audio pipeline failed: {e}. Falling back to single audio generation.")
+                logger.error(traceback.format_exc())
+
+        # Fallback to single file generation
         text = script_data.get("narration", "")
         if not text:
             logger.error(f"Job {job_id}: No narration text found in script_data")

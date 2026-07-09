@@ -350,6 +350,19 @@ class VideoEngine:
             logger.error(traceback.format_exc())
             return False
 
+    def _get_audio_duration(self, path):
+        """Retrieve exact duration of an audio file using ffprobe."""
+        try:
+            import subprocess
+            res = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, check=True
+            )
+            return float(res.stdout.strip())
+        except Exception as e:
+            logger.warning(f"Failed to get audio duration for {path}: {e}")
+            return None
+
     async def _render_ffmpeg(self, scene_paths, audio_path, output_path, script_data=None):
         """Standardize clips, concatenate, and sync with audio using FFmpeg.
         
@@ -371,6 +384,9 @@ class VideoEngine:
         
         try:
             dirs_to_clean = []
+            temp_audio_dir = os.path.join(settings.TEMP_DIR, f"{job_id}_audio_segments")
+            if os.path.exists(temp_audio_dir):
+                dirs_to_clean.append(temp_audio_dir)
             # Step 0: Ensure Tamil Font exists
             fonts_dir = os.path.join(os.getcwd(), "assets", "fonts")
             os.makedirs(fonts_dir, exist_ok=True)
@@ -461,8 +477,18 @@ class VideoEngine:
             for idx, p in enumerate(scene_paths):
                 processed_path = p.replace(".mp4", f"_std_{idx}.mp4")
                 
-                # ── Faster cuts: cap each clip to 8–10 s (varied for natural rhythm) ─────────
-                clip_duration = _rand.uniform(8.0, 10.0)  # 8-10s per scene
+                # Determine exact clip duration from synced segment audio
+                seg_audio_path = os.path.join(temp_audio_dir, f"{job_id}_scene_{idx}_narration.wav")
+                seg_duration = None
+                if os.path.exists(seg_audio_path):
+                    seg_duration = self._get_audio_duration(seg_audio_path)
+                
+                if seg_duration is not None and seg_duration > 0.0:
+                    clip_duration = seg_duration
+                    logger.info(f"Scene {idx+1}: Synced to segment audio duration: {clip_duration:.2f}s")
+                else:
+                    clip_duration = _rand.uniform(8.0, 10.0)
+                    logger.info(f"Scene {idx+1}: Fallback to random duration: {clip_duration:.2f}s")
 
                 # Dynamic visual text overlay for high user retention
                 # Text overlays are completely disabled per user request
