@@ -98,6 +98,24 @@ class VideoEngine:
                 local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                 downloaded_success = False
                 
+                # Try AI Video Generation if enabled
+                if settings.VIDEO_SOURCE == "ai":
+                    ai_prompt = scene.get("ai_video_prompt") or query
+                    if ai_prompt:
+                        logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — Generating via Wan 2.1 AI...")
+                        try:
+                            from engines.ai_video_engine import AIVideoEngine
+                            ai_engine = AIVideoEngine()
+                            ai_clip_path = await ai_engine.generate_scene_clip(ai_prompt, job_id, i)
+                            if ai_clip_path and os.path.exists(ai_clip_path):
+                                logger.info(f"Job {job_id}: Scene {i+1} successfully generated via AI: {ai_clip_path}")
+                                assets.append(ai_clip_path)
+                                continue
+                            else:
+                                logger.warning(f"Job {job_id}: AI generation failed for Scene {i+1}, falling back to stock search...")
+                        except Exception as e:
+                            logger.error(f"Job {job_id}: AI Video Engine error for Scene {i+1}: {e}. Falling back to stock...")
+                
                 logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels & Pixabay for '{query}'")
                 
                 # Check both platforms sequentially with increasing fallback generality to maximize relevance
@@ -540,8 +558,16 @@ class VideoEngine:
                 else:
                     logger.info(f"Scene {idx+1}: No animation config (anim_config={anim_config})")
 
+                # Query input video duration to see if we need to loop it
+                p_duration = self._get_audio_duration(p)
+                loop_input = p_duration is None or p_duration < clip_duration
+                
                 # Build dynamic FFmpeg command
-                cmd = ["ffmpeg", "-y", "-i", p]
+                cmd = ["ffmpeg", "-y"]
+                if loop_input:
+                    logger.info(f"Scene {idx+1}: Video duration ({f'{p_duration:.2f}' if p_duration else 'unknown'}s) is shorter than scene duration ({clip_duration:.2f}s). Looping input...")
+                    cmd += ["-stream_loop", "-1"]
+                cmd += ["-i", p]
                 next_input_idx = 1
                 
                 watermark_input_idx = -1

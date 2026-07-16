@@ -48,6 +48,8 @@ class Settings(BaseSettings):
     DEFAULT_LANGUAGE: str = "ta"
     SIMILARITY_THRESHOLD: float = 0.7
     SUBTITLE_MODE: str = "baked"  # 'cc' for Closed Captions, 'baked' for hardcoded subtitles
+    VIDEO_SOURCE: str = "ai"  # 'ai' for remote Wan 2.1 Space, 'pexels' for stock, 'youtube' for Creative Commons clips
+    WAN_MODEL_ID: str = "Wan-AI/Wan2.1"
     
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
