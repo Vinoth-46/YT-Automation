@@ -8,8 +8,14 @@ from core.config import settings
 
 logger = logging.getLogger(__name__)
 
-# ── Default fully-automatic schedule at 08:00 IST ────────────────────────────
-AUTO_SCHEDULE_TIME = "08:00"   # change here if you ever want a different time
+# ── Default fully-automatic schedule at 03:30 IST ────────────────────────────
+# 03:30 AM IST = ~10:00 PM UTC (previous day)
+# This is the LOWEST global traffic window for Hugging Face Spaces:
+#   - US is sleeping (10 PM ET)
+#   - Europe hasn't woken up (midnight CET)
+#   - China/Asia is finishing work
+# AI video generation on Wan 2.1 HF Space is fastest at this hour.
+AUTO_SCHEDULE_TIME = "03:30"
 AUTO_SCHEDULE_TAG  = "auto_morning_publish"   # sentinel job-id in APScheduler
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -29,16 +35,17 @@ class SchedulerService:
 
     async def load_schedules(self):
         """Load active schedules from the database and add to APScheduler.
-        Also ensures the hardcoded 08:00 morning auto-publish job always exists.
+        Also ensures the hardcoded auto-publish job always exists.
         """
         async with Database.get_session() as session:
-            # Automatically migrate active 12:00 schedules to 08:00 to match the new preference
-            await session.execute(
-                update(Schedule)
-                .where(Schedule.publish_time == "12:00")
-                .where(Schedule.status == "active")
-                .values(publish_time="08:00")
-            )
+            # Automatically migrate active old schedules to match the new low-traffic preference
+            for old_time in ["12:00", "08:00"]:
+                await session.execute(
+                    update(Schedule)
+                    .where(Schedule.publish_time == old_time)
+                    .where(Schedule.status == "active")
+                    .values(publish_time=AUTO_SCHEDULE_TIME)
+                )
             await session.commit()
 
             result = await session.execute(select(Schedule).where(Schedule.status == "active"))
@@ -47,7 +54,7 @@ class SchedulerService:
             for sched in schedules:
                 self.add_schedule_job(sched)
 
-        # Always guarantee the 08:00 morning fully-automatic job is registered unless a DB schedule exists at 08:00
+        # Always guarantee the auto-publish job is registered unless a DB schedule exists at the same time
         has_morning_db_schedule = any(s.publish_time == AUTO_SCHEDULE_TIME for s in schedules)
         if not has_morning_db_schedule:
             self._ensure_auto_morning_job()
@@ -58,7 +65,7 @@ class SchedulerService:
 
 
     def _ensure_auto_morning_job(self):
-        """Register (or re-register) the 08:00 morning fully-automatic publish job."""
+        """Register (or re-register) the daily fully-automatic publish job."""
         hour, minute = AUTO_SCHEDULE_TIME.split(":")
         if self.scheduler.get_job(AUTO_SCHEDULE_TAG):
             self.scheduler.remove_job(AUTO_SCHEDULE_TAG)
@@ -66,7 +73,7 @@ class SchedulerService:
             self._run_auto_publish,
             CronTrigger(hour=hour, minute=minute),
             id=AUTO_SCHEDULE_TAG,
-            name="🕗 Daily Auto-Publish at 08:00 IST",
+            name=f"🌙 Daily Auto-Publish at {AUTO_SCHEDULE_TIME} IST",
         )
         logger.info(f"✅ Auto-publish job guaranteed at {AUTO_SCHEDULE_TIME} IST (ID: {AUTO_SCHEDULE_TAG})")
 
@@ -107,10 +114,10 @@ class SchedulerService:
         from core.orchestrator import Orchestrator
 
         chat_ids = settings.ALLOWED_CHAT_IDS
-        logger.info("🕗 08:00 auto-publish job triggered")
+        logger.info(f"🌙 {AUTO_SCHEDULE_TIME} auto-publish job triggered")
 
         await self._notify(
-            "🕗 08:00 AM Auto-Publish started!\n\n"
+            f"🌙 {AUTO_SCHEDULE_TIME} AM Auto-Publish started!\n\n"
             "📝 Stage 1/4: Generating AI Script...",
             chat_ids
         )
