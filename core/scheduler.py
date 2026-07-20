@@ -210,9 +210,43 @@ class SchedulerService:
         
         success = await orchestrator.run_pipeline(job_id, progress_callback=notify_telegram)
         
-        if success and self.bot and chat_ids:
+        if not success:
             await self._notify(
-                f"✅ Scheduled video (Job #{job_id}) is ready! Use /status to check.",
+                f"❌ Scheduled Job #{job_id} failed.\n"
+                "Check Kaggle logs for details.",
+                chat_ids
+            )
+            return
+
+        # ── Auto-upload to YouTube ────────────────────────────────────────────
+        await self._notify(
+            f"✅ Video rendered! Job #{job_id}\n"
+            "🚀 Uploading to YouTube now...",
+            chat_ids
+        )
+
+        try:
+            video_id = await orchestrator.publish_video(job_id)
+        except Exception as pub_err:
+            await self._notify(
+                f"❌ YouTube upload failed for Job #{job_id}: {pub_err}",
+                chat_ids
+            )
+            return
+
+        if video_id:
+            youtube_url = f"https://youtu.be/{video_id}"
+            await self._notify(
+                f"🎉 Video Published Successfully!\n\n"
+                f"📌 Job: #{job_id}\n"
+                f"🔗 {youtube_url}\n\n"
+                f"The video is now LIVE on YouTube! ✅",
+                chat_ids
+            )
+            logger.info(f"Scheduled publish complete: {youtube_url}")
+        else:
+            await self._notify(
+                f"⚠️ Upload may have failed — no video ID returned for Job #{job_id}.",
                 chat_ids
             )
 
