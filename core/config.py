@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     GROQ_API_KEY: str = ""
     HF_TOKEN: str = ""
     PIXABAY_API_KEY: str = ""
+    NVIDIA_API_KEY: str = ""  # NVIDIA NIM API key for Cosmos 3 Nano video generation
 
     # PostgreSQL Config
     POSTGRES_URL: str = "postgresql+asyncpg://user:password@localhost/yt_automation"
