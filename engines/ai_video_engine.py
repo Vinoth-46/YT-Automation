@@ -3,7 +3,15 @@ import time
 import logging
 import asyncio
 import shutil
-from gradio_client import Client
+try:
+    from gradio_client import Client
+except ImportError:
+    import subprocess
+    import sys
+    print("📦 gradio_client not found. Installing gradio_client automatically...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "-q", "gradio_client"], check=True)
+    from gradio_client import Client
+
 from core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -19,14 +27,24 @@ class AIVideoEngine:
         """Lazy loader for LTX-Video Gradio client (Fastest, ~15-20 sec)."""
         if not self.ltx_client:
             logger.info(f"Connecting to Lightricks LTX-Video Space '{self.ltx_space_id}'...")
-            self.ltx_client = Client(self.ltx_space_id)
+            hf_token = getattr(settings, "HF_TOKEN", "").strip() or None
+            try:
+                self.ltx_client = Client(self.ltx_space_id, hf_token=hf_token)
+            except Exception as e:
+                logger.error(f"Failed to connect to LTX-Video Space ({self.ltx_space_id}): {e}")
+                raise e
         return self.ltx_client
 
     def _get_wan_client(self):
         """Lazy loader for Wan 2.1 Gradio client."""
         if not self.wan_client:
             logger.info(f"Connecting to Hugging Face Gradio Space '{self.wan_space_id}'...")
-            self.wan_client = Client(self.wan_space_id)
+            hf_token = getattr(settings, "HF_TOKEN", "").strip() or None
+            try:
+                self.wan_client = Client(self.wan_space_id, hf_token=hf_token)
+            except Exception as e:
+                logger.error(f"Failed to connect to Wan 2.1 Space ({self.wan_space_id}): {e}")
+                raise e
         return self.wan_client
 
     def _generate_ltx_sync(self, prompt: str, output_path: str, height: int = 896, width: int = 512) -> str:
