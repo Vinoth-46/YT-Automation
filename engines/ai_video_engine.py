@@ -54,7 +54,7 @@ class AIVideoEngine:
         
         neg_prompt = "worst quality, inconsistent motion, blurry, jittery, distorted, lowres"
         
-        result, seed = client.predict(
+        res_output = client.predict(
             prompt=prompt,
             negative_prompt=neg_prompt,
             input_image_filepath=None,
@@ -71,14 +71,28 @@ class AIVideoEngine:
             api_name="/text_to_video"
         )
         
-        if result and isinstance(result, dict) and result.get("video"):
-            video_temp = result.get("video")
-            if os.path.exists(video_temp):
-                logger.info(f"LTX Video generated successfully ({width}x{height}): {video_temp}")
-                shutil.copy(video_temp, output_path)
-                return output_path
+        video_temp = None
+        if isinstance(res_output, str) and os.path.exists(res_output):
+            video_temp = res_output
+        elif isinstance(res_output, (list, tuple)):
+            for item in res_output:
+                if isinstance(item, str) and os.path.exists(item):
+                    video_temp = item
+                    break
+                elif isinstance(item, dict):
+                    v_path = item.get("video") or item.get("path") or item.get("name")
+                    if v_path and os.path.exists(v_path):
+                        video_temp = v_path
+                        break
+        elif isinstance(res_output, dict):
+            video_temp = res_output.get("video") or res_output.get("path") or res_output.get("name")
+            
+        if video_temp and os.path.exists(video_temp):
+            logger.info(f"LTX Video generated successfully ({width}x{height}): {video_temp}")
+            shutil.copy(video_temp, output_path)
+            return output_path
                 
-        raise Exception("LTX-Video returned no video filepath.")
+        raise Exception(f"LTX-Video returned unparseable result: {res_output}")
 
     def _generate_wan_sync(self, prompt: str, output_path: str, size: str = "720*1280") -> str:
         """Fallback Wan 2.1 video generation via Gradio API client."""
@@ -93,29 +107,38 @@ class AIVideoEngine:
             api_name="/t2v_generation_async"
         )
         
-        max_attempts = 30
+        max_attempts = 45
         poll_interval = 8
         
         for attempt in range(max_attempts):
             time.sleep(poll_interval)
             try:
                 status = client.predict(api_name="/status_refresh")
-                video_info = status[0] if status else None
-                progress = status[3] if len(status) > 3 else 0
-                
-                logger.info(f"Wan 2.1 Progress: {progress}% (Attempt {attempt+1}/{max_attempts})")
-                
-                if video_info is not None:
-                    video_temp_path = video_info.get("video")
-                    if video_temp_path and os.path.exists(video_temp_path):
-                        logger.info(f"Wan 2.1 Video downloaded: {video_temp_path}")
-                        shutil.copy(video_temp_path, output_path)
+                if not status:
+                    continue
+                    
+                # Inspect all return values in status tuple/list to locate valid MP4 file path
+                items_to_check = status if isinstance(status, (list, tuple)) else [status]
+                for item in items_to_check:
+                    if isinstance(item, str) and os.path.exists(item) and item.endswith(".mp4"):
+                        logger.info(f"Wan 2.1 Video downloaded (path: {item})")
+                        shutil.copy(item, output_path)
                         return output_path
-                
-                if progress == 100 and video_info is None:
-                    break
+                    elif isinstance(item, dict):
+                        for key in ["video", "path", "name", "url", "file", "value"]:
+                            v_path = item.get(key)
+                            if isinstance(v_path, str) and os.path.exists(v_path) and v_path.endswith(".mp4"):
+                                logger.info(f"Wan 2.1 Video downloaded (key '{key}': {v_path})")
+                                shutil.copy(v_path, output_path)
+                                return output_path
+                            elif isinstance(v_path, dict):
+                                nested = v_path.get("path") or v_path.get("name") or v_path.get("url")
+                                if isinstance(nested, str) and os.path.exists(nested) and nested.endswith(".mp4"):
+                                    logger.info(f"Wan 2.1 Video downloaded (nested '{key}': {nested})")
+                                    shutil.copy(nested, output_path)
+                                    return output_path
             except Exception as e:
-                logger.warning(f"Wan 2.1 poll warning: {e}")
+                logger.warning(f"Wan 2.1 poll warning (attempt {attempt+1}): {e}")
                 
         raise Exception("Wan 2.1 AI video generation timed out or failed.")
 
