@@ -4,6 +4,20 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# Automatically fetch secrets from Kaggle Secrets if running inside Kaggle environment
+try:
+    from kaggle_secrets import UserSecretsClient
+    _secrets = UserSecretsClient()
+    for _k in ["NVIDIA_API_KEY", "HF_TOKEN", "GROQ_API_KEY", "GEMINI_API_KEY", "TELEGRAM_BOT_TOKEN", "PEXELS_API_KEY", "PIXABAY_API_KEY"]:
+        try:
+            _val = _secrets.get_secret(_k)
+            if _val:
+                os.environ[_k] = _val
+        except Exception:
+            pass
+except Exception:
+    pass
+
 class Settings(BaseSettings):
     # API Keys
     OPENROUTER_API_KEY: str
