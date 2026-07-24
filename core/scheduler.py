@@ -144,12 +144,6 @@ class SchedulerService:
             return
 
         # ── Auto-upload to YouTube ────────────────────────────────────────────
-        await self._notify(
-            f"✅ Video rendered! Job #{job_id}\n"
-            "🚀 Uploading to YouTube now...",
-            chat_ids
-        )
-
         try:
             video_id = await orchestrator.publish_video(job_id)
         except Exception as pub_err:
@@ -219,12 +213,6 @@ class SchedulerService:
             return
 
         # ── Auto-upload to YouTube ────────────────────────────────────────────
-        await self._notify(
-            f"✅ Video rendered! Job #{job_id}\n"
-            "🚀 Uploading to YouTube now...",
-            chat_ids
-        )
-
         try:
             video_id = await orchestrator.publish_video(job_id)
         except Exception as pub_err:

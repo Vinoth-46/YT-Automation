@@ -274,8 +274,6 @@ class Orchestrator:
         import asyncio as _asyncio
         
         try:
-            await self._update_job_state(job_id, JobState.UPLOADING)
-            
             async with Database.get_session() as session:
                 # 1. Fetch Job, Script (for metadata), and Video (for file path)
                 result = await session.execute(
@@ -283,6 +281,18 @@ class Orchestrator:
                 )
                 job = result.scalar_one()
                 
+                # Check if video was already published
+                if job.state == JobState.UPLOADED:
+                    res_v_check = await session.execute(
+                        select(VideoAsset).where(VideoAsset.job_id == job_id)
+                        .order_by(VideoAsset.id.desc()).limit(1)
+                    )
+                    existing_v = res_v_check.scalar_one_or_none()
+                    if existing_v and existing_v.final_path and "youtu.be/" in existing_v.final_path:
+                        v_id = existing_v.final_path.split("youtu.be/")[-1]
+                        logger.info(f"Job #{job_id} is already UPLOADED (video_id: {v_id}). Skipping duplicate upload.")
+                        return v_id
+
                 # Fetch LATEST script and video assets (job may have been regenerated)
                 res_s = await session.execute(
                     select(ScriptAsset).where(ScriptAsset.job_id == job_id)
@@ -306,6 +316,8 @@ class Orchestrator:
                 
                 if not channel or not channel.oauth_tokens:
                     raise Exception("No YouTube channel linked or missing tokens. Run authentication first.")
+
+            await self._update_job_state(job_id, JobState.UPLOADING)
 
             # 3. Initialize Engine and Upload (with retry)
             yt_engine = YouTubeEngine(token_data=channel.oauth_tokens)

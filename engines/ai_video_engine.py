@@ -101,8 +101,44 @@ class AIVideoEngine:
                 
         raise Exception("Wan 2.1 AI video generation timed out or failed.")
 
+    def _generate_nvidia_sync(self, prompt: str, output_path: str) -> str:
+        """Generate video clip using NVIDIA Cosmos NIM API."""
+        api_key = getattr(settings, "NVIDIA_API_KEY", "")
+        if not api_key:
+            raise Exception("No NVIDIA_API_KEY configured in environment.")
+            
+        logger.info(f"Submitting NVIDIA Cosmos T2V task. Prompt: '{prompt[:60]}...'")
+        import httpx
+        
+        url = "https://ai.api.nvidia.com/v1/genai/nvidia/cosmos-1.0-diffusion-7b"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json"
+        }
+        payload = {
+            "prompt": prompt,
+            "negative_prompt": "blurry, worst quality, distorted, low quality",
+            "guidance_scale": 7.0
+        }
+        
+        with httpx.Client(timeout=120.0) as client:
+            resp = client.post(url, headers=headers, json=payload)
+            if resp.status_code == 200:
+                data = resp.json()
+                video_url = data.get("video") or data.get("video_url") or data.get("artifacts", [{}])[0].get("url")
+                if video_url:
+                    vid_resp = client.get(video_url)
+                    if vid_resp.status_code == 200:
+                        with open(output_path, "wb") as f:
+                            f.write(vid_resp.content)
+                        logger.info(f"NVIDIA Cosmos video saved: {output_path}")
+                        return output_path
+                raise Exception(f"NVIDIA API response contained no video URL: {data}")
+            else:
+                raise Exception(f"NVIDIA API error (HTTP {resp.status_code}): {resp.text[:200]}")
+
     async def generate_scene_clip(self, prompt: str, job_id: int, scene_idx: int) -> str:
-        """Asynchronously generates an AI clip.
+        """Asynchronously generates an AI clip matching the scene script.
         Order of attempt:
         1. LTX-Video Distilled (Ultra-fast, ~15-20s, portrait 512x896)
         2. Wan 2.1 (720x1280 fallback)
@@ -110,9 +146,9 @@ class AIVideoEngine:
         output_filename = f"{job_id}_scene_{scene_idx}_ai.mp4"
         output_path = os.path.join(settings.TEMP_DIR, output_filename)
         
-        # 1. Try LTX-Video Distilled first (Ultra-fast!)
+        # 1. Try LTX-Video Distilled (Ultra-fast!)
         try:
-            logger.info(f"Job {job_id} Scene {scene_idx+1}: Trying LTX-Video Distilled (Primary AI Generator)...")
+            logger.info(f"Job {job_id} Scene {scene_idx+1}: Generating video clip via LTX-Video Distilled...")
             result = await asyncio.to_thread(self._generate_ltx_sync, prompt, output_path, 896, 512)
             if result and os.path.exists(result):
                 return result
@@ -121,7 +157,7 @@ class AIVideoEngine:
             
         # 2. Try Wan 2.1 fallback
         try:
-            logger.info(f"Job {job_id} Scene {scene_idx+1}: Trying Wan 2.1 fallback...")
+            logger.info(f"Job {job_id} Scene {scene_idx+1}: Generating video clip via Wan 2.1 fallback...")
             result = await asyncio.to_thread(self._generate_wan_sync, prompt, output_path, "720*1280")
             if result and os.path.exists(result):
                 return result

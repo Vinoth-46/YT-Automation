@@ -485,8 +485,8 @@ class VideoEngine:
             
             # Step 1: Pre-process each clip individually
             watermark_path = os.path.join(os.getcwd(), "assets", "Watermark", "loading-logo.webp")
-            has_watermark = os.path.exists(watermark_path)
-            logger.info(f"Job {job_id}: Watermark found: {has_watermark} at {watermark_path}")
+            has_watermark = getattr(settings, "ENABLE_WATERMARK", False) and os.path.exists(watermark_path)
+            logger.info(f"Job {job_id}: Watermark enabled: {has_watermark} (path: {watermark_path})")
             
             scenes = script_data.get("scenes", []) if script_data else []
             
@@ -537,7 +537,7 @@ class VideoEngine:
                 anim_temp_dir = ""
                 
                 scene_config = scenes[idx] if idx < len(scenes) else {}
-                anim_config = scene_config.get("animation")
+                anim_config = scene_config.get("animation") if getattr(settings, "ENABLE_ANIMATION_OVERLAY", False) else None
                 
                 if anim_config and isinstance(anim_config, dict) and anim_config.get("type"):
                     anim_temp_dir = os.path.join(temp_dir, f"{job_id}_scene_{idx}_anim")

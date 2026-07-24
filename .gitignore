@@ -36,6 +36,7 @@ assets/*
 !assets/fonts/
 *.log
 *.sqlite
+*.mp4
 credentials/
 
 # IDEs
