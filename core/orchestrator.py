@@ -116,44 +116,20 @@ class Orchestrator:
             
             metadata = script_data.get("metadata", {})
             eng_desc = metadata.get("description", "")
-            hindi_title = metadata.get("hindi_title", "")
-            hindi_desc = metadata.get("hindi_description", "")
-            spanish_title = metadata.get("spanish_title", "")
-            spanish_desc = metadata.get("spanish_description", "")
 
-            # Store CLEAN English description only (no Hindi/Spanish dumps)
-            # Translations are handled separately via YouTube Localizations API
+            # Store CLEAN English description
             combined_desc = eng_desc
-            
-            # Store translations in script_data for use during publish_video localizations
-            # (they'll be read from the DB description field using a JSON suffix)
-            localization_data = {}
-            # Save Tamil title from AI topic generation (used for Tamil localization)
-            tamil_title = topic_data.get("title_ta", "")
-            if tamil_title:
-                localization_data["tamil_title"] = tamil_title
-            if hindi_title:
-                localization_data["hindi_title"] = hindi_title
-            if hindi_desc:
-                localization_data["hindi_description"] = hindi_desc
-            if spanish_title:
-                localization_data["spanish_title"] = spanish_title
-            if spanish_desc:
-                localization_data["spanish_description"] = spanish_desc
-            
-            # Append localization JSON as a hidden block at the end of description
-            # (parsed during publish, never shown to viewers because it's after the fold)
-            if localization_data:
-                import json as _json
-                combined_desc += "\n\n" + "<!-- LOCALIZATIONS: " + _json.dumps(localization_data) + " -->"
 
             async with Database.get_session() as session:
+                raw_title = metadata.get("title", "").strip()
+                if not raw_title.endswith("#Shorts"):
+                    raw_title = f"{raw_title} #Shorts" if raw_title else "#Shorts"
+
                 script_asset = ScriptAsset(
                     job_id=job_id,
                     topic=topic_data.get("title_en"),
                     script_text=script_data.get("narration"),
-                    # Format title: "English Title #தமிழ் #CivilEngineering"
-                    title=metadata.get("title", "") + " #தமிழ் #CivilEngineering",
+                    title=raw_title,
                     description=combined_desc,
                     hashtags=metadata.get("tags"),
                     thumbnail_text=metadata.get("thumbnail_text", "AVOID THIS MISTAKE"),
@@ -395,79 +371,23 @@ class Orchestrator:
                 except Exception as te:
                     logger.error(f"Failed to upload thumbnail: {te}")
 
-            # 5. Set Multi-Language Localizations (English + Tamil + Hindi + Spanish)
+            # 5. Set Tamil & English Localizations only (prevent non-Tamil viewer drop-off)
             try:
                 desc = script.description or ""
-                eng_desc = desc
-                tamil_title = ""
-                hindi_title = ""
-                hindi_desc = ""
-                spanish_title = ""
-                spanish_desc = ""
-
-                if "--- HINDI TRANSLATION ---" in desc:
-                    parts = desc.split("--- HINDI TRANSLATION ---")
-                    eng_desc = parts[0].strip()
-                    rest = parts[1]
-                    
-                    h_part = rest
-                    s_part = ""
-                    if "--- SPANISH TRANSLATION ---" in rest:
-                        h_part, s_part = rest.split("--- SPANISH TRANSLATION ---")
-                    
-                    h_part = h_part.strip()
-                    h_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', h_part, re.DOTALL)
-                    h_desc_match = re.search(r'DESC:\s*(.*)', h_part, re.DOTALL)
-                    if h_title_match:
-                        hindi_title = h_title_match.group(1).strip()
-                    if h_desc_match:
-                        hindi_desc = h_desc_match.group(1).strip()
-                        
-                    if s_part:
-                        s_part = s_part.strip()
-                        s_title_match = re.search(r'TITLE:\s*(.*?)(?=\s*DESC:|$)', s_part, re.DOTALL)
-                        s_desc_match = re.search(r'DESC:\s*(.*)', s_part, re.DOTALL)
-                        if s_title_match:
-                            spanish_title = s_title_match.group(1).strip()
-                        if s_desc_match:
-                            spanish_desc = s_desc_match.group(1).strip()
-                elif "<!-- LOCALIZATIONS:" in desc:
-                    # New format: parse JSON from hidden comment block
-                    import json as _json
-                    loc_match = re.search(r'<!-- LOCALIZATIONS: (.*?) -->', desc, re.DOTALL)
-                    if loc_match:
-                        try:
-                            loc_data = _json.loads(loc_match.group(1))
-                            tamil_title = loc_data.get("tamil_title", "")
-                            hindi_title = loc_data.get("hindi_title", "")
-                            hindi_desc = loc_data.get("hindi_description", "")
-                            spanish_title = loc_data.get("spanish_title", "")
-                            spanish_desc = loc_data.get("spanish_description", "")
-                            # Clean eng_desc by removing the hidden block
-                            eng_desc = desc[:desc.index("<!-- LOCALIZATIONS:")].strip()
-                        except Exception as je:
-                            logger.warning(f"Failed to parse localization JSON: {je}")
+                clean_desc = desc
+                if "<!-- LOCALIZATIONS:" in desc:
+                    clean_desc = desc[:desc.index("<!-- LOCALIZATIONS:")].strip()
 
                 localizations = {
                     "en": {
                         "title": script.title or "",
-                        "description": eng_desc or ""
+                        "description": clean_desc
                     },
                     "ta": {
-                        "title": tamil_title or script.topic or script.title or "",
-                        "description": eng_desc or ""
+                        "title": script.topic or script.title or "",
+                        "description": clean_desc
                     }
                 }
-                if hindi_title:
-                    localizations["hi"] = {
-                        "title": hindi_title,
-                        "description": hindi_desc or eng_desc
-                    }
-                if spanish_title:
-                    localizations["es"] = {
-                        "title": spanish_title,
-                        "description": spanish_desc or eng_desc
-                    }
 
                 yt_engine.set_video_localizations(
                     video_id=video_id,

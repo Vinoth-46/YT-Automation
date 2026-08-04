@@ -47,28 +47,27 @@ class YouTubeEngine:
             safe_title = safe_title[:95] + "..."
 
         # Build visible hashtag string AND safe_tags (YouTube metadata)
-        # YouTube only shows the FIRST 3 hashtags as clickable blue links above the title
-        # So we put the 3 most important ones at the START of the description
-        safe_tags = ["Shorts"]  # Always ensure #Shorts is first for Shorts shelf discovery
-        top_hashtags = ["#Shorts"]  # First 3 go at TOP of description
+        # Enforce strict limit of 5 high-relevance tags max to avoid YouTube metadata spam penalty
+        safe_tags = ["Shorts"]
+        top_hashtags = ["#Shorts"]
         remaining_hashtags = []
-        current_tag_len = len("Shorts") + 1
+        seen_tags = {"shorts"}
         if tags:
             for tag in tags:
                 clean = tag.strip().lstrip("#").replace(" ", "")
-                if clean and clean.lower() != "shorts":  # Skip duplicates of Shorts
-                    if len(clean) < 50 and current_tag_len + len(clean) + 1 <= 400:
+                if clean and clean.lower() not in seen_tags:
+                    seen_tags.add(clean.lower())
+                    if len(safe_tags) < 5:
                         safe_tags.append(clean)
-                        current_tag_len += len(clean) + 1
                     hashtag = f"#{clean}"
                     if len(top_hashtags) < 3:
                         top_hashtags.append(hashtag)
-                    else:
+                    elif len(remaining_hashtags) < 3:
                         remaining_hashtags.append(hashtag)
         
-        # Top 3 hashtags go BEFORE description, remaining go AFTER
+        # Top 3 hashtags go BEFORE description, remaining (up to 2) go AFTER
         top_hashtag_str = " ".join(top_hashtags)
-        remaining_hashtag_str = "\n\n" + " ".join(remaining_hashtags[:25]) if remaining_hashtags else ""
+        remaining_hashtag_str = "\n\n" + " ".join(remaining_hashtags) if remaining_hashtags else ""
 
         full_description = top_hashtag_str + "\n\n" + (description or "") + remaining_hashtag_str
 
