@@ -12,10 +12,21 @@ import aiohttp
 import httpx
 import traceback
 import time
+import re
+import urllib.parse
 from core.config import settings
 from engines.animation_engine import AnimationEngine
 
 logger = logging.getLogger(__name__)
+
+BANNED_VIDEO_KEYWORDS = {
+    'run', 'running', 'runner', 'runners', 'jump', 'jumping', 'jumper', 
+    'walk', 'walking', 'walker', 'dance', 'dancing', 'dancer', 'fitness', 
+    'workout', 'gym', 'sport', 'sports', 'yoga', 'athlete', 'marathon', 
+    'model', 'fashion', 'beach', 'party', 'parkour', 'jogging', 'exercise', 
+    'stretching', 'swimming', 'aerobics', 'cycling', 'bikini', 'swimsuit',
+    'skate', 'skating', 'skateboard', 'posing', 'selfie'
+}
 
 # === Quality Settings (synced with main engine) ===
 VID_W, VID_H = 1080, 1920
@@ -109,20 +120,25 @@ class VideoEngine:
         
         async with aiohttp.ClientSession() as session:
             for i, scene in enumerate(scenes):
-                query = scene.get("visual_query", "civil engineering")
+                raw_query = scene.get("visual_query", "house construction")
+                # Domain sanitization: strip any remaining abstract / conversational words
+                clean_query = re.sub(r'(?i)\b(mistake|problem|tips|tip|secret|solution|subscribe|human|man|person|warning|must know)\b', '', raw_query).strip()
+                if not clean_query or len(clean_query.split()) < 1:
+                    clean_query = "house construction site"
+                    
                 local_path = os.path.join(settings.TEMP_DIR, f"{job_id}_scene_{i}.mp4")
                 downloaded_success = False
                 
                 # Try AI Video Generation if enabled
                 if settings.VIDEO_SOURCE == "ai":
-                    ai_prompt = scene.get("ai_video_prompt") or query
+                    ai_prompt = scene.get("ai_video_prompt") or clean_query
                     if ai_prompt:
-                        logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — Generating via Wan 2.1 AI...")
+                        logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — Generating via AI Video Engine...")
                         try:
                             from engines.ai_video_engine import AIVideoEngine
                             ai_engine = AIVideoEngine()
                             ai_clip_path = await ai_engine.generate_scene_clip(ai_prompt, job_id, i)
-                            if ai_clip_path and os.path.exists(ai_clip_path):
+                            if ai_clip_path and os.path.exists(ai_clip_path) and os.path.getsize(ai_clip_path) > 1000:
                                 logger.info(f"Job {job_id}: Scene {i+1} successfully generated via AI: {ai_clip_path}")
                                 assets.append(ai_clip_path)
                                 continue
@@ -131,20 +147,20 @@ class VideoEngine:
                         except Exception as e:
                             logger.error(f"Job {job_id}: AI Video Engine error for Scene {i+1}: {e}. Falling back to stock...")
                 
-                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels & Pixabay for '{query}'")
+                logger.info(f"Job {job_id}: Scene {i+1}/{len(scenes)} — searching Pexels & Pixabay for '{clean_query}'")
                 
-                # Check both platforms sequentially with increasing fallback generality to maximize relevance
+                # Check both platforms sequentially with construction domain anchoring
                 search_steps = [
                     # (platform, query_string, orientation)
-                    ("pexels", query, "portrait"),
-                    ("pixabay", query, None),
-                    ("pexels", query, "all"),
-                    ("pexels", f"{query} construction", "portrait"),
-                    ("pixabay", f"{query} construction", None),
-                    ("pexels", "civil engineering construction", "portrait"),
-                    ("pixabay", "civil engineering construction", None),
-                    ("pexels", "building site", "portrait"),
-                    ("pixabay", "building site", None)
+                    ("pexels", clean_query, "portrait"),
+                    ("pexels", f"{clean_query} construction", "portrait"),
+                    ("pixabay", f"{clean_query} construction", None),
+                    ("pexels", clean_query, "all"),
+                    ("pixabay", clean_query, None),
+                    ("pexels", "house construction site", "portrait"),
+                    ("pixabay", "building construction", None),
+                    ("pexels", "brick masonry", "portrait"),
+                    ("pixabay", "concrete building", None)
                 ]
                 
                 asset_url = None
@@ -956,10 +972,11 @@ class VideoEngine:
                             pass
 
     async def _search_pexels(self, session, query, used_video_ids, valid_lines, orientation="portrait"):
-        """Search Pexels API for a single query (async)."""
+        """Search Pexels API for a single query (async) with relevance ranking and negative keyword filtering."""
         query = query.strip().lower()
+        encoded_query = urllib.parse.quote_plus(query)
         headers = {"Authorization": self.pexels_api_key}
-        url = f"https://api.pexels.com/videos/search?query={query}&per_page=30"
+        url = f"https://api.pexels.com/videos/search?query={encoded_query}&per_page=20"
         if orientation == "portrait":
             url += "&orientation=portrait"
         
@@ -971,73 +988,110 @@ class VideoEngine:
                 data = await response.json()
                 videos = data.get("videos", [])
                 if videos:
-                    import random
-                    random.shuffle(videos)
+                    # Do NOT random.shuffle! Preserve top relevance ranking from Pexels API
                     for video in videos:
                         vid_id = str(video.get("id", ""))
-                        if vid_id not in used_video_ids:
-                            used_video_ids.add(vid_id)
-                            import time as _time
-                            valid_lines.append(f"{vid_id}|{_time.time()}")
-                            video_files = video.get("video_files", [])
-                            for vf in video_files:
-                                width = vf.get("width", 0)
-                                height = vf.get("height", 0)
-                                if 720 <= width <= 1920 or 720 <= height <= 1920:
-                                    return vf["link"]
-                            if video_files:
-                                smallest = min(video_files, key=lambda x: x.get("width", 9999))
-                                return smallest["link"]
+                        if vid_id in used_video_ids:
+                            continue
+                        
+                        # Negative filter: check video URL slug for banned activities (running, jumping, fitness, etc.)
+                        video_url = video.get("url", "").lower()
+                        url_words = set(re.findall(r'[a-zA-Z]+', video_url))
+                        banned_match = url_words.intersection(BANNED_VIDEO_KEYWORDS)
+                        if banned_match:
+                            logger.info(f"Pexels: skipped irrelevant video {vid_id} matching banned keywords {banned_match}")
+                            continue
+                            
+                        used_video_ids.add(vid_id)
+                        import time as _time
+                        valid_lines.append(f"{vid_id}|{_time.time()}")
+                        video_files = video.get("video_files", [])
+                        for vf in video_files:
+                            width = vf.get("width", 0)
+                            height = vf.get("height", 0)
+                            if 720 <= width <= 1920 or 720 <= height <= 1920:
+                                return vf["link"]
+                        if video_files:
+                            smallest = min(video_files, key=lambda x: x.get("width", 9999))
+                            return smallest["link"]
         except Exception as e:
             logger.warning(f"Pexels search error for '{query}' ({orientation}): {e}")
         return None
 
     async def _search_pixabay(self, session, query, used_video_ids, valid_lines):
-        """Search Pixabay API for a single query (async)."""
+        """Search Pixabay API for a single query (async) with relevance ranking and negative keyword filtering."""
         api_key = getattr(settings, "PIXABAY_API_KEY", "")
         if not api_key:
             return None
             
         query = query.strip().lower()
-        url = f"https://pixabay.com/api/videos/?key={api_key}&q={query}&per_page=30"
+        encoded_query = urllib.parse.quote_plus(query)
+        
+        # Primary attempt: filter by category=buildings/industry and video_type=film
+        url = f"https://pixabay.com/api/videos/?key={api_key}&q={encoded_query}&video_type=film&category=buildings&per_page=20"
         try:
             async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as response:
-                if response.status != 200:
-                    return None
+                data = None
+                if response.status == 200:
+                    data = await response.json()
                 
-                data = await response.json()
-                hits = data.get("hits", [])
+                # If building category returned no hits, try broader search without category constraint
+                if not data or not data.get("hits"):
+                    url_broad = f"https://pixabay.com/api/videos/?key={api_key}&q={encoded_query}&video_type=film&per_page=20"
+                    async with session.get(url_broad, timeout=aiohttp.ClientTimeout(total=15)) as resp2:
+                        if resp2.status == 200:
+                            data = await resp2.json()
+                        else:
+                            return None
+                            
+                hits = data.get("hits", []) if data else []
                 if hits:
-                    import random
-                    random.shuffle(hits)
+                    # Do NOT random.shuffle! Preserve top relevance ranking
                     # Attempt 1: Portrait first
                     for hit in hits:
                         vid_id = str(hit.get("id", ""))
-                        if vid_id not in used_video_ids:
-                            videos = hit.get("videos", {})
-                            size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
-                            if size_key in videos:
-                                vid_info = videos[size_key]
-                                width = vid_info.get("width", 0)
-                                height = vid_info.get("height", 0)
-                                if height > width:
-                                    used_video_ids.add(vid_id)
-                                    import time as _time
-                                    valid_lines.append(f"{vid_id}|{_time.time()}")
-                                    return vid_info["url"]
-                                    
-                    # Attempt 2: Landscape/Any (FFmpeg will crop)
-                    for hit in hits:
-                        vid_id = str(hit.get("id", ""))
-                        if vid_id not in used_video_ids:
-                            videos = hit.get("videos", {})
-                            size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
-                            if size_key in videos:
-                                vid_info = videos[size_key]
+                        if vid_id in used_video_ids:
+                            continue
+                            
+                        # Negative filter: check tags for banned activities (running, dancing, fitness, etc.)
+                        tags = hit.get("tags", "").lower()
+                        tag_words = set(re.findall(r'[a-zA-Z]+', tags))
+                        banned_match = tag_words.intersection(BANNED_VIDEO_KEYWORDS)
+                        if banned_match:
+                            logger.info(f"Pixabay: skipped irrelevant video {vid_id} matching banned tags {banned_match}")
+                            continue
+                            
+                        videos = hit.get("videos", {})
+                        size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                        if size_key in videos:
+                            vid_info = videos[size_key]
+                            width = vid_info.get("width", 0)
+                            height = vid_info.get("height", 0)
+                            if height > width:
                                 used_video_ids.add(vid_id)
                                 import time as _time
                                 valid_lines.append(f"{vid_id}|{_time.time()}")
                                 return vid_info["url"]
+                                
+                    # Attempt 2: Landscape/Any (FFmpeg will crop)
+                    for hit in hits:
+                        vid_id = str(hit.get("id", ""))
+                        if vid_id in used_video_ids:
+                            continue
+                            
+                        tags = hit.get("tags", "").lower()
+                        tag_words = set(re.findall(r'[a-zA-Z]+', tags))
+                        if tag_words.intersection(BANNED_VIDEO_KEYWORDS):
+                            continue
+                            
+                        videos = hit.get("videos", {})
+                        size_key = "medium" if "medium" in videos else ("small" if "small" in videos else "large")
+                        if size_key in videos:
+                            vid_info = videos[size_key]
+                            used_video_ids.add(vid_id)
+                            import time as _time
+                            valid_lines.append(f"{vid_id}|{_time.time()}")
+                            return vid_info["url"]
         except Exception as e:
             logger.warning(f"Pixabay search error for '{query}': {e}")
         return None

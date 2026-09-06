@@ -47,15 +47,41 @@ class AIVideoEngine:
                 raise e
         return self.wan_client
 
+    def _clean_prompt(self, prompt: str) -> str:
+        """Sanitize and optimize text-to-video prompt for physical adherence."""
+        import re
+        p = prompt.strip()
+        # Remove markdown quotes or conversational prefixes
+        p = re.sub(r'["\'\*\`]', '', p)
+        # Remove conversational or call-to-action phrases
+        p = re.sub(r'(?i)\b(subscribe|click|like and share|kitchaas enterprises|warning|mistake|avoid this|dont do this|must know)\b', '', p)
+        # Strip extraneous spaces
+        p = re.sub(r'\s+', ' ', p).strip()
+        
+        # Ensure it has a strong camera direction prefix if missing
+        if not re.match(r'(?i)^(cinematic|close-up|drone|macro|wide|tracking|slow motion)', p):
+            p = f"Cinematic close-up shot of {p}"
+        
+        # Append quality tags if missing
+        if not re.search(r'(?i)(photorealistic|4k|high quality)', p):
+            p = f"{p}, photorealistic, 4k, crisp details"
+            
+        return p
+
     def _generate_ltx_sync(self, prompt: str, output_path: str, height: int = 896, width: int = 512) -> str:
         """Fast synchronous text-to-video generation using LTX-Video Distilled (~15-20s)."""
         client = self._get_ltx_client()
-        logger.info(f"Submitting LTX T2V task. Resolution: {width}x{height}, Prompt: '{prompt[:60]}...'")
+        clean_prompt = self._clean_prompt(prompt)
+        logger.info(f"Submitting LTX T2V task. Resolution: {width}x{height}, Prompt: '{clean_prompt[:70]}...'")
         
-        neg_prompt = "worst quality, inconsistent motion, blurry, jittery, distorted, lowres"
+        neg_prompt = (
+            "worst quality, inconsistent motion, blurry, jittery, distorted, lowres, "
+            "cartoon, anime, running, walking, jumping, fitness, dancing, talking head, "
+            "deformed face, disfigured, text, watermark"
+        )
         
         res_output = client.predict(
-            prompt=prompt,
+            prompt=clean_prompt,
             negative_prompt=neg_prompt,
             input_image_filepath=None,
             input_video_filepath=None,
@@ -66,7 +92,7 @@ class AIVideoEngine:
             ui_frames_to_use=9,
             seed_ui=42,
             randomize_seed=True,
-            ui_guidance_scale=1,
+            ui_guidance_scale=3.0,
             improve_texture_flag=True,
             api_name="/text_to_video"
         )
@@ -97,17 +123,18 @@ class AIVideoEngine:
     def _generate_wan_sync(self, prompt: str, output_path: str, size: str = "720*1280") -> str:
         """Fallback Wan 2.1 video generation via Gradio API client."""
         client = self._get_wan_client()
-        logger.info(f"Submitting Wan 2.1 T2V task. Size: {size}, Prompt: '{prompt[:60]}...'")
+        clean_prompt = self._clean_prompt(prompt)
+        logger.info(f"Submitting Wan 2.1 T2V task. Size: {size}, Prompt: '{clean_prompt[:70]}...'")
         
         submission = client.predict(
-            prompt=prompt,
+            prompt=clean_prompt,
             size=size,
             watermark_wan=False,
             seed=-1,
             api_name="/t2v_generation_async"
         )
         
-        max_attempts = 45
+        max_attempts = 35
         poll_interval = 8
         
         for attempt in range(max_attempts):
@@ -144,11 +171,12 @@ class AIVideoEngine:
 
     def _generate_nvidia_sync(self, prompt: str, output_path: str) -> str:
         """Generate video clip using NVIDIA Cosmos NIM API."""
-        api_key = getattr(settings, "NVIDIA_API_KEY", "")
+        api_key = getattr(settings, "NVIDIA_API_KEY", "").strip()
         if not api_key:
             raise Exception("No NVIDIA_API_KEY configured in environment.")
             
-        logger.info(f"Submitting NVIDIA Cosmos T2V task. Prompt: '{prompt[:60]}...'")
+        clean_prompt = self._clean_prompt(prompt)
+        logger.info(f"Submitting NVIDIA Cosmos T2V task. Prompt: '{clean_prompt[:70]}...'")
         import httpx
         
         url = "https://ai.api.nvidia.com/v1/genai/nvidia/cosmos-1.0-diffusion-7b"
@@ -157,8 +185,8 @@ class AIVideoEngine:
             "Accept": "application/json"
         }
         payload = {
-            "prompt": prompt,
-            "negative_prompt": "blurry, worst quality, distorted, low quality",
+            "prompt": clean_prompt,
+            "negative_prompt": "blurry, worst quality, distorted, low quality, running, jumping, walking, cartoon, text",
             "guidance_scale": 7.0
         }
         
@@ -182,7 +210,8 @@ class AIVideoEngine:
         """Asynchronously generates an AI clip matching the scene script.
         Order of attempt:
         1. LTX-Video Distilled (Ultra-fast, ~15-20s, portrait 512x896)
-        2. Wan 2.1 (720x1280 fallback)
+        2. NVIDIA Cosmos 1.0 Diffusion (if NVIDIA_API_KEY configured)
+        3. Wan 2.1 (720x1280 fallback)
         """
         output_filename = f"{job_id}_scene_{scene_idx}_ai.mp4"
         output_path = os.path.join(settings.TEMP_DIR, output_filename)
@@ -194,9 +223,20 @@ class AIVideoEngine:
             if result and os.path.exists(result):
                 return result
         except Exception as e:
-            logger.warning(f"Job {job_id} Scene {scene_idx+1}: LTX-Video failed: {e}. Trying Wan 2.1 fallback...")
+            logger.warning(f"Job {job_id} Scene {scene_idx+1}: LTX-Video failed: {e}.")
+
+        # 2. Try NVIDIA Cosmos NIM API (if key available)
+        nvidia_key = getattr(settings, "NVIDIA_API_KEY", "").strip()
+        if nvidia_key:
+            try:
+                logger.info(f"Job {job_id} Scene {scene_idx+1}: Generating video clip via NVIDIA Cosmos...")
+                result = await asyncio.to_thread(self._generate_nvidia_sync, prompt, output_path)
+                if result and os.path.exists(result):
+                    return result
+            except Exception as ne:
+                logger.warning(f"Job {job_id} Scene {scene_idx+1}: NVIDIA Cosmos failed: {ne}.")
             
-        # 2. Try Wan 2.1 fallback
+        # 3. Try Wan 2.1 fallback
         try:
             logger.info(f"Job {job_id} Scene {scene_idx+1}: Generating video clip via Wan 2.1 fallback...")
             result = await asyncio.to_thread(self._generate_wan_sync, prompt, output_path, "720*1280")

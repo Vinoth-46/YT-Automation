@@ -176,9 +176,14 @@ class ScriptEngine:
             f"   - Technical Solution (15-20s): Transition immediately to concrete, actionable steps so viewers don't swipe away.\n"
             f"   - SCRIPT LENGTH: The TOTAL narration must be approximately 25-35 seconds long when spoken (around 60-75 Tamil words total across 4 scenes).\n"
             f"   - CRITICAL: The narration text MUST strictly end with this exact concise Tamil CTA: 'மேலும் பல சிவில் தகவல்களுக்கு Subscribe செய்யுங்கள்! Kitchaa\'s Enterprises.'\n"
-            f"4. VISUALS & SCENES: Exactly 4 scenes total. For each scene, ensure 100% ACCURATE visual alignment between what is spoken in 'narration_tamil' and the visual video prompts:\n"
-            f"   - 'visual_query': An extremely specific, descriptive 2-3 word English search keyword for stock video search. It MUST 100% physically depict the exact action or object spoken in 'narration_tamil' (e.g., 'pouring concrete', 'laying bricks', 'painting wall', 'mixing cement', 'digging foundation'). NEVER use abstract words like 'mistake', 'problem', 'Vastu', 'engineering', 'tips', or 'safety'.\n"
-            f"   - 'ai_video_prompt': A highly detailed, photorealistic prompt in English for text-to-video generation. Describe specific camera movements (e.g., slow panning, close-up tracking shot), lighting, and the exact physical construction action described in 'narration_tamil' (e.g., 'Cinematic close-up shot of a mason using a trowel to apply mortar between red bricks, photorealistic, 4k').\n"
+            f"4. VISUALS & SCENES: Exactly 4 scenes total. Every scene MUST depict a 100% concrete, physical, tangible construction action or building object:\n"
+            f"   - STRICT ZERO-TOLERANCE RULE: NEVER depict people talking to camera, pointing, waving, running, jumping, walking, fitness, business meetings, holding smartphones, or clicking subscribe buttons.\n"
+            f"   - Scene 1 (Hook): Must physically depict the structural defect or construction site action (e.g. 'cracked concrete foundation', 'water leaking wall dampness', 'foundation digging'). DO NOT depict a person looking worried or talking.\n"
+            f"   - Scene 2 (Problem/Analysis): Must physically depict materials or structural components (e.g. 'mixing mortar cement', 'red clay bricks inspection', 'measuring tape on column').\n"
+            f"   - Scene 3 (Technical Solution): Must physically depict the correct engineering work being done (e.g. 'mason laying bricks with trowel', 'applying waterproof coating to wall', 'vibrating wet concrete in slab').\n"
+            f"   - Scene 4 (CTA / Outro): Must physically depict a completed, modern, beautiful house or pristine construction finish (e.g. 'exterior of modern Indian residential home in sunlight', 'smooth painted wall finish'). DO NOT depict a subscribe button or people waving.\n"
+            f"   - 'visual_query': An exact 2-3 word English search term strictly chosen from physical construction vocabulary (e.g. 'pouring concrete', 'laying bricks', 'wall plastering', 'mixing cement', 'digging foundation', 'tiling floor'). NEVER include abstract words ('mistake', 'tips', 'problem', 'secret', 'solution', 'subscribe', 'engineering').\n"
+            f"   - 'ai_video_prompt': A direct 20-30 word camera-directed physical shot for AI video generators (e.g. 'Cinematic close-up tracking shot of a mason using a metal trowel to lay mortar between red bricks, photorealistic, 4k'). Format: [Camera Angle] of [Physical Action / Object], [Lighting/Quality].\n"
             f"   - 'narration_tamil': The exact Tamil script segment spoken during this specific scene (approx 15-20 words). The concatenation of all 4 'narration_tamil' blocks must equal the overall 'narration' block.\n"
             f"   - ANIMATION: Do NOT generate animation overlays. Set \"animation\": null for all scenes.\n"
             f"5. METADATA: Description MUST be generated strictly in English (not Tamil) and include Business Name, Contact, Website, Instagram, and all 4 services.\n"
@@ -246,6 +251,13 @@ class ScriptEngine:
                     except Exception as fe:
                         logger.warning(f"English metadata fix parsing failed: {fe}")
             
+            # Sanitize scene prompts to guarantee 100% physical relevance
+            if "scenes" in data.get('script', {}):
+                data['script']['scenes'] = self._sanitize_scene_prompts(
+                    data['script']['scenes'], 
+                    data.get('topic', {}).get('title_en', 'house construction')
+                )
+
             # Perform similarity check on the combined output
             similarity_score = await self.calculate_similarity(data['script'].get("narration", ""))
             data['script']["similarity_score"] = similarity_score
@@ -260,6 +272,50 @@ class ScriptEngine:
             logger.error(f"Mega-Prompt parsing failed: {e}")
             return None
 
+
+    def _sanitize_scene_prompts(self, scenes, fallback_topic="house construction"):
+        """Enforce strictly physical construction visuals and eliminate abstract or irrelevant keywords."""
+        banned_abstract = [
+            'mistake', 'problem', 'tips', 'tip', 'secret', 'solution', 'subscribe', 
+            'human', 'man', 'person', 'woman', 'advice', 'warning', 'error', 'danger', 
+            'careful', 'idea', 'rule', 'hack', 'safety', 'presentation', 'explaining',
+            'running', 'walking', 'jumping', 'talking', 'confused', 'smiling', 'gesture',
+            'phone', 'button', 'click', 'subscribe button', 'meeting'
+        ]
+        
+        fallback_queries = [
+            "foundation concrete pouring",
+            "laying red clay bricks",
+            "mortar plastering wall",
+            "modern residential house exterior"
+        ]
+        
+        for idx, sc in enumerate(scenes):
+            vq = sc.get("visual_query", "").strip()
+            vq_lower = vq.lower()
+            words = re.findall(r'\b\w+\b', vq_lower)
+            
+            # If visual_query is missing or heavily abstract or contains banned words
+            if not vq or any(b in words for b in banned_abstract) or len(words) < 2:
+                clean_vq = fallback_queries[idx % len(fallback_queries)]
+                logger.info(f"Sanitized scene {idx+1} visual_query: '{vq}' -> '{clean_vq}'")
+                sc["visual_query"] = clean_vq
+            elif not any(term in vq_lower for term in ["construction", "building", "brick", "concrete", "wall", "foundation", "cement", "tile", "mortar", "slab", "house", "plaster", "rebar", "roof"]):
+                sc["visual_query"] = f"{vq} construction"
+                
+            ai_prompt = sc.get("ai_video_prompt", "").strip()
+            ai_words = set(re.findall(r'\b\w+\b', ai_prompt.lower()))
+            has_banned_concept = bool(ai_words.intersection(banned_abstract)) or any(phrase in ai_prompt.lower() for phrase in ["talking to camera", "pointing at", "clicking subscribe", "warning homeowner", "explaining mistake", "subscribe button", "waving", "thumbs up", "looking at camera"])
+            
+            # Clean AI prompt from non-physical/talking head elements
+            if not ai_prompt or has_banned_concept:
+                if idx == 0:
+                    sc["ai_video_prompt"] = "Cinematic dramatic close-up shot of cracked concrete foundation structure, photorealistic 4k"
+                elif idx == len(scenes) - 1:
+                    sc["ai_video_prompt"] = "Cinematic exterior drone tracking shot of modern luxury Indian residential house in morning sunlight, photorealistic 4k"
+                else:
+                    sc["ai_video_prompt"] = f"Cinematic close-up tracking shot of {sc['visual_query']}, professional lighting, photorealistic 4k"
+        return scenes
 
     async def generate_topic(self, existing_topics=None):
         """Generate a fresh civil engineering topic tailored for India."""
@@ -295,13 +351,13 @@ class ScriptEngine:
             "1. Hook (5s) "
             "2. Body (50s) with technical civil engineering terms. "
             "3. CTA (5s). "
-            "4. Exactly 6 scenes total. "
+            "4. Exactly 6 scenes total. Every scene MUST depict a 100% concrete, physical construction action (NO talking heads, running, jumping, walking). "
             "5. Title: Generate a highly intriguing, clear, benefit-driven YouTube title instead of only technical wording. "
             "6. Thumbnail: Generate a simple, bold, high-click-through English text overlay for the thumbnail (max 3-4 words, capitalized, e.g. 'AVOID THIS MISTAKE'). "
             "Provide ONLY valid JSON exactly matching this structure: "
             "{"
             "  \"narration\": \"Full Tamil script here (concatenation of all narration_tamil fields)\", "
-            "  \"scenes\": [{\"visual_query\": \"specific english search term for stock video\", \"ai_video_prompt\": \"Detailed photorealistic prompt for AI generator describing camera panning/zoom and physical construction action\", \"narration_tamil\": \"Tamil narration spoken during this scene\", \"animation\": {\"type\": \"comparison|ratio|structural|progress|warning\", \"title\": \"...\", \"details\": {}}}], "
+            "  \"scenes\": [{\"visual_query\": \"specific physical english search term for stock video (e.g. laying bricks, concrete pouring)\", \"ai_video_prompt\": \"Cinematic close-up of physical construction action without people talking\", \"narration_tamil\": \"Tamil narration spoken during this scene\", \"animation\": null}], "
             "  \"metadata\": {\"title\": \"...\", \"description\": \"...\", \"tags\": [...], \"thumbnail_text\": \"...\"}"
             "} "
             "Make sure 'visual_query' is a highly specific, descriptive 2-3 word English search keyword that represents a concrete, physical, visual action or object that can be filmed. "
@@ -315,6 +371,13 @@ class ScriptEngine:
             text = re.search(r'\{.*\}', response_text, re.DOTALL).group()
             script_data = json.loads(text)
             
+            # Sanitize scene prompts to guarantee 100% physical relevance
+            if "scenes" in script_data:
+                script_data["scenes"] = self._sanitize_scene_prompts(
+                    script_data["scenes"],
+                    topic.get('title_en', 'house construction')
+                )
+
             # --- Monetization Safeguard: Similarity Check ---
             similarity_score = await self.calculate_similarity(script_data.get("narration", ""))
             if similarity_score > settings.SIMILARITY_THRESHOLD and retry_count < 2:
